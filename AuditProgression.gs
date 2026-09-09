@@ -26,7 +26,7 @@
  * @param {Object} cohortAtCoderMap - Cohort AtCoder submissions.
  * @returns {Object} Progression analysis result.
  */
-function analyzeRatingProgression(sheet, studentInfo, cfIndex, cohortSubmissionsMap, cohortAtCoderMap) {
+function analyzeRatingProgression(sheet, studentInfo, cfIndex, cohortSubmissionsMap, cohortAtCoderMap, preloadedData, preloadedHasHint) {
   var result = {
     currentTier: 0,
     verdict: 'BUILDING',
@@ -35,13 +35,15 @@ function analyzeRatingProgression(sheet, studentInfo, cfIndex, cohortSubmissions
     forecastSolvesNeeded: 0
   };
 
-  var lastRow = sheet.getLastRow();
-  if (lastRow < 4) return result;
-
-  var hasHintCol = hasHintColumn(sheet);
-  // Read ALL historical rows: columns F(6) through M(13) if hint column exists, else F(6) through L(12)
+  var hasHintCol = (preloadedHasHint !== undefined) ? preloadedHasHint : (sheet ? hasHintColumn(sheet) : false);
   var numCols = hasHintCol ? 8 : 7;
-  var data = sheet.getRange(4, 6, lastRow - 3, numCols).getValues();
+  var data = preloadedData;
+  if (!data && sheet) {
+    var lastRow = sheet.getLastRow();
+    if (lastRow < 4) return result;
+    data = sheet.getRange(4, 6, lastRow - 3, numCols).getValues();
+  }
+  if (!data || data.length === 0) return result;
 
   // Collect all AC solves with rating, time, and hint status, sorted by date
   var allSolves = [];
@@ -247,7 +249,7 @@ function analyzeRatingProgression(sheet, studentInfo, cfIndex, cohortSubmissions
  * @param {number} [currentTier=800] - Student's current working rating tier.
  * @returns {Object} Tag analysis result.
  */
-function analyzeTagWeaknesses(sheet, studentInfo, cfIndex, cohortSubmissionsMap, cohortAtCoderMap, currentTier) {
+function analyzeTagWeaknesses(sheet, studentInfo, cfIndex, cohortSubmissionsMap, cohortAtCoderMap, currentTier, preloadedData, preloadedHasHint) {
   var studentTier = currentTier || 800;
   var result = {
     weakTags: [],
@@ -319,11 +321,16 @@ function analyzeTagWeaknesses(sheet, studentInfo, cfIndex, cohortSubmissionsMap,
 
   // Read from sheet-level category data for hint tracking and non-CF platform coverage.
   // CF problems already counted above are skipped to prevent double-counting.
-  var lastRow = sheet.getLastRow();
-  if (lastRow >= 4) {
-    var hasHintCol = hasHintColumn(sheet);
-    var numCols = hasHintCol ? 8 : 7;
-    var sheetData = sheet.getRange(4, 6, lastRow - 3, numCols).getValues();
+  var hasHintCol = (preloadedHasHint !== undefined) ? preloadedHasHint : (sheet ? hasHintColumn(sheet) : false);
+  var numCols = hasHintCol ? 8 : 7;
+  var sheetData = preloadedData;
+  if (!sheetData && sheet) {
+    var lastRow = sheet.getLastRow();
+    if (lastRow >= 4) {
+      sheetData = sheet.getRange(4, 6, lastRow - 3, numCols).getValues();
+    }
+  }
+  if (sheetData && sheetData.length > 0) {
     for (var sd = 0; sd < sheetData.length; sd++) {
       var link = String(sheetData[sd][0] || '').trim();
       if (!link) continue;

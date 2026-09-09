@@ -281,11 +281,15 @@ clasp push
 ### 2. Configure Script Properties
 In the Google Apps Script IDE, navigate to **Project Settings** $\rightarrow$ **Script Properties** and add:
 
-| Property | Description | Example |
-| :--- | :--- | :--- |
-| `MOONSHOT_API_KEY` | API Key for Kimi Moonshot AI | `sk-...` |
-| `GEMINI_API_KEY` | API Key for Google Gemini | `AIzaSy...` |
-| `INSTRUCTOR_EMAILS`| Fallback instructor email list (comma/semicolon-separated) | `coach@edu.org, ta@edu.org` |
+| Property | Description | Alternative / Alias | Example |
+| :--- | :--- | :--- | :--- |
+| `KIMI_KEY` | API Key for Kimi Moonshot AI | `MOONSHOT_API_KEY` | `sk-...` |
+| `GEMINI_KEY` | API Key for Google Gemini | `GEMINI_API_KEY` | `AIzaSy...` |
+| `INSTRUCTOR_EMAIL` | Instructor email list (comma/semicolon-separated) | `INSTRUCTOR_EMAILS` | `coach@edu.org, ta@edu.org` |
+| `WEB_APP_API_KEY` | Optional auth key to secure `doGet` endpoints | — | `secret-api-key-xyz` |
+| `ENABLE_HISTORY_ARCHIVE` | Toggle Step 6 History sheet archiving (`true`/`false`) | Auto-enabled if `History` sheet exists | `true` |
+
+*(Note: The engine supports both `KIMI_KEY` and `MOONSHOT_API_KEY`, `GEMINI_KEY` and `GEMINI_API_KEY`, and `INSTRUCTOR_EMAIL` and `INSTRUCTOR_EMAILS` interchangeably).*
 
 ### 3. Run Schema Migration (If Adding Hint Column)
 If your student sheets do not yet have Column M (`Hint?`), run `addHintColumnToAllSheets()` in [`temp.gs`](temp.gs) once from the Apps Script editor. This will idempotently insert Column M and shift subsequent columns without corrupting Study Arena data.
@@ -304,9 +308,14 @@ To automate the weekly audit:
 
 ## 🧪 Testing & Validation
 
-All modules are designed to run cleanly under simulated V8 environments for automated CI verification.
+The codebase includes an automated test harness that tests the anomaly detection engine, HTML escaping (preventing XSS in emails), AI circuit breaker cooldowns, and column header schema detection.
 
-Run the test suite locally using Node.js:
+Run the automated test suite locally using Node.js:
+```bash
+node tests/test_audit_engine.js
+```
+
+Validate JavaScript syntax for all Google Apps Script files:
 ```bash
 node -e '
 const fs = require("fs"), vm = require("vm");

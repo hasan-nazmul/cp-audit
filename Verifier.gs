@@ -7,13 +7,13 @@
  * 2. Codeforces: Batch handle validation + Tiered fetch (count=200 -> count=2000)
  *    with compact CacheService (<15KB)
  * 3. LeetCode: Direct GraphQL query + error body parsing + fallback
- * 4. Manual OJs: Persistent daily rate limit (max 5/day)
+ * 4. Manual OJs: Unrestricted manual submissions (Gym, CSES, VJudge, Toph, etc.)
  * ═══════════════════════════════════════════════════════════════════
  */
 
 var CACHE_TTL_SECONDS = 900;          // 15 minutes for submission caches
 var HANDLE_CACHE_TTL_SECONDS = 86400; // 24 hours for handle validity caches
-var MAX_MANUAL_SOLVES_PER_DAY = 5;
+var MAX_MANUAL_SOLVES_PER_DAY = (typeof getAuditConfigNum === 'function') ? getAuditConfigNum('MAX_MANUAL_SOLVES_PER_DAY', 0) : 0; // 0 = unlimited
 
 // ─── Handle Syntax & Placeholder Filtering ──────────────────────────
 
@@ -272,10 +272,12 @@ function verifyProblemServer(urlOrCode, studentInfo, studentSheet, manualVerdict
   }
 
   // ── 4. Manual Platforms (Gym, CSES, VJudge, Toph, etc.) ──
-  // Enforce persistent rate limit of max 5 manual submissions per day directly from student sheet
-  var manualCountToday = countManualSubmissionsToday(studentSheet, todayDateStr);
-  if (manualCountToday >= MAX_MANUAL_SOLVES_PER_DAY) {
-    throw new Error('Daily limit of ' + MAX_MANUAL_SOLVES_PER_DAY + ' manual problem submissions reached for today (' + todayDateStr + '). Please submit verified Codeforces/LeetCode/AtCoder problems or contact an instructor.');
+  // Unrestricted manual problem submissions (no artificial daily limits)
+  if (MAX_MANUAL_SOLVES_PER_DAY > 0) {
+    var manualCountToday = countManualSubmissionsToday(studentSheet, todayDateStr);
+    if (manualCountToday >= MAX_MANUAL_SOLVES_PER_DAY) {
+      throw new Error('Daily limit of ' + MAX_MANUAL_SOLVES_PER_DAY + ' manual problem submissions reached for today (' + todayDateStr + '). Please submit verified Codeforces/LeetCode/AtCoder problems or contact an instructor.');
+    }
   }
 
   var finalVerdict = String(manualVerdict || 'AC').toUpperCase().trim();
@@ -855,7 +857,7 @@ function verifyAtCoderServer(handles, targetContestId, targetProblemId, canonica
   }
 
   // Fetch difficulty if available
-  var difficultyMap = fetchAtCoderDifficultyMap();
+  var difficultyMap = fetchAtCoderDifficultyMap(targetKey);
   var difficulty = (difficultyMap && difficultyMap[targetKey]) ? difficultyMap[targetKey] : '';
 
   var v = foundSub.v === 'AC' ? 'AC' : (foundSub.v || 'WA');
@@ -942,32 +944,26 @@ function fetchAndIndexAtCoderSubmissions(handle, fromSecond) {
  * Cached for 24 hours. Returns empty map on failure.
  * @returns {Object.<string, number>}
  */
-function fetchAtCoderDifficultyMap() {
-  var cache = CacheService.getScriptCache();
-
-  // problem-models.json is ~1MB so we can't cache it directly in CacheService (100KB limit).
-  // Instead, we use ScriptProperties for a compact extracted map, or PropertiesService.
-  // For simplicity and reliability, we use a global var + lazy fetch per execution.
+function fetchAtCoderDifficultyMap(targetProblemId) {
+  // If in-memory cache is already loaded, use it immediately
   if (typeof _atcoderDifficultyCache !== 'undefined' && _atcoderDifficultyCache) {
     return _atcoderDifficultyCache;
   }
 
-  // Check if we have a recent compact cache in script properties
-  var props = PropertiesService.getScriptProperties();
-  var cachedTs = props.getProperty('ac_diff_ts');
-  var now = Math.floor(Date.now() / 1000);
-
-  if (cachedTs && (now - Number(cachedTs)) < ATCODER_DIFFICULTY_CACHE_TTL) {
-    var cachedDiff = props.getProperty('ac_diff_map');
-    if (cachedDiff) {
-      try {
-        _atcoderDifficultyCache = JSON.parse(cachedDiff);
-        return _atcoderDifficultyCache;
-      } catch (e) { /* re-fetch */ }
-    }
+  var cache = CacheService.getScriptCache();
+  // Fast path for single problem lookups (e.g. onEdit verification):
+  if (targetProblemId) {
+    try {
+      var cachedSingle = cache.get('ac_diff_' + targetProblemId);
+      if (cachedSingle) {
+        var map = {};
+        map[targetProblemId] = Number(cachedSingle);
+        return map;
+      }
+    } catch (e) { /* ignore cache read error */ }
   }
 
-  // Fetch fresh
+  // Fetch fresh problem models from Kenkoooo
   var diffMap = {};
   try {
     var res = UrlFetchApp.fetch(ATCODER_DIFFICULTY_URL, { muteHttpExceptions: true });
@@ -980,12 +976,11 @@ function fetchAtCoderDifficultyMap() {
         }
       }
 
-      // Store compact version in script properties (< 500KB limit)
-      // Only store a subset if too large
-      var jsonStr = JSON.stringify(diffMap);
-      if (jsonStr.length <= 450000) {
-        props.setProperty('ac_diff_map', jsonStr);
-        props.setProperty('ac_diff_ts', String(now));
+      // Cache target problem in CacheService (per-key 100KB limit; avoids PropertiesService 9KB limit)
+      if (targetProblemId && diffMap[targetProblemId]) {
+        try {
+          cache.put('ac_diff_' + targetProblemId, String(diffMap[targetProblemId]), 86400); // 24 hours
+        } catch (ce) { /* ignore */ }
       }
     }
   } catch (err) {

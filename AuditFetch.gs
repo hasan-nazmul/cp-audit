@@ -191,6 +191,9 @@ function fetchCohortSubmissionsParallel(handlesList) {
               try {
                 var dJson = JSON.parse(dResp.getContentText());
                 if (dJson && dJson.status === 'OK' && Array.isArray(dJson.result)) {
+                  if (dJson.result.length === 500) {
+                    Logger.log('⚠️ CF submission deep-fetch ceiling reached (700 subs) for handle ' + dItem.handle + '. Older submissions from this week may be truncated.');
+                  }
                   for (var dk = 0; dk < dJson.result.length; dk++) {
                     var dCompact = compactifySubmission(dJson.result[dk], dItem.handle);
                     if (dCompact) mergedSubs.push(dCompact);
@@ -219,13 +222,19 @@ function fetchCohortSubmissionsParallel(handlesList) {
     }
   }
 
-  // Bulk cache store
+  // Safe cache store: individual puts prevent exceeding CacheService.putAll 100KB total batch limit
   try {
-    if (Object.keys(cacheEntriesToStore).length > 0) {
-      cache.putAll(cacheEntriesToStore, AUDIT_CACHE_TTL);
+    var cacheKeys = Object.keys(cacheEntriesToStore);
+    for (var cki = 0; cki < cacheKeys.length; cki++) {
+      var ck = cacheKeys[cki];
+      try {
+        cache.put(ck, cacheEntriesToStore[ck], AUDIT_CACHE_TTL);
+      } catch (perKeyErr) {
+        Logger.log('Cache put error for ' + ck + ': ' + perKeyErr);
+      }
     }
   } catch (ce) {
-    Logger.log('Cache putAll error for CF submissions: ' + ce);
+    Logger.log('Cache storage error for CF submissions: ' + ce);
   }
 
   return resultMap;

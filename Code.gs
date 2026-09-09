@@ -1,106 +1,35 @@
 /**
  * ═══════════════════════════════════════════════════════════════════
- * Code.gs — Main Entry Point for Apps Script Web App & Triggers
- * Routes doGet / doPost to appropriate handlers and manages onEdit.
+ * Code.gs — Main Entry Point for Google Sheets Installable Triggers
+ * Manages onEdit triggers, roster cache, and real-time OJ verification.
  * ═══════════════════════════════════════════════════════════════════
  */
-
-/**
- * Handle GET requests (read-only endpoints).
- * URL: ?action=getOverview | getHeatmap&sheet=Time | getStudentProfile&matricId=... | getHistory&matricId=... | getSuggestions&matricId=...
- */
-function doGet(e) {
-  try {
-    var action = (e && e.parameter && e.parameter.action) || '';
-
-    switch (action) {
-      case 'getOverview':
-        return jsonResponse(typeof handleGetOverview === 'function' ? handleGetOverview() : { status: 'OK' });
-
-      case 'getHeatmap':
-        return jsonResponse(typeof handleGetHeatmap === 'function' ? handleGetHeatmap(e.parameter.sheet || 'Time') : { status: 'OK' });
-
-      case 'getStudentProfile':
-        if (!e.parameter.matricId) return errorResponse('matricId is required', 400);
-        return jsonResponse(typeof handleGetStudentProfile === 'function' ? handleGetStudentProfile(e.parameter.matricId) : { status: 'OK' });
-
-      case 'getHistory':
-        if (!e.parameter.matricId) return errorResponse('matricId is required', 400);
-        return jsonResponse(typeof handleGetHistory === 'function' ? handleGetHistory(e.parameter.matricId || '') : { status: 'OK' });
-
-      case 'getSuggestions':
-        if (!e.parameter.matricId) return errorResponse('matricId is required', 400);
-        return jsonResponse(typeof handleGetSuggestions === 'function' ? handleGetSuggestions(e.parameter.matricId) : { status: 'OK' });
-
-      default:
-        return errorResponse('Unknown action: ' + action, 400);
-    }
-  } catch (err) {
-    if (typeof logSystemError === 'function') {
-      logSystemError('doGet:' + ((e && e.parameter && e.parameter.action) || 'unknown'), (e && e.parameter && e.parameter.matricId) || 'N/A', err, e && e.parameter);
-    }
-    return errorResponse(err.message || 'Internal server error', 500);
-  }
-}
-
-/**
- * Handle POST requests (auth + mutations).
- * Body: { action, idToken, ... }
- */
-function doPost(e) {
-  var body = {};
-  try {
-    body = JSON.parse((e && e.postData && e.postData.contents) || '{}');
-    var action = body.action || '';
-
-    switch (action) {
-      case 'verifyLogin':
-        return jsonResponse(typeof handleVerifyLogin === 'function' ? handleVerifyLogin(body.idToken) : { authenticated: true });
-
-      case 'addProblem': {
-        var user = typeof authorizeRequest === 'function' ? authorizeRequest(body.idToken, body.matricId) : null;
-        return jsonResponse(typeof handleAddProblem === 'function' ? handleAddProblem(body.matricId, body.problemData, user) : { success: true });
-      }
-
-      case 'addStudy': {
-        var userStudy = typeof authorizeRequest === 'function' ? authorizeRequest(body.idToken, body.matricId) : null;
-        return jsonResponse(typeof handleAddStudy === 'function' ? handleAddStudy(body.matricId, body.studyData, userStudy) : { success: true });
-      }
-
-      default:
-        return errorResponse('Unknown action: ' + action, 400);
-    }
-  } catch (err) {
-    if (typeof logSystemError === 'function') {
-      logSystemError('doPost:' + (body.action || 'unknown'), body.matricId || 'N/A', err, body);
-    }
-    return errorResponse(err.message || 'Internal server error', 500);
-  }
-}
-
-// ─── Response Helpers ──────────────────────────────────────────────
-
-function jsonResponse(data) {
-  return ContentService
-    .createTextOutput(JSON.stringify(data))
-    .setMimeType(ContentService.MimeType.JSON);
-}
-
-function errorResponse(message, code) {
-  return ContentService
-    .createTextOutput(JSON.stringify({ error: message, code: code || 500 }))
-    .setMimeType(ContentService.MimeType.JSON);
-}
 
 // ─── INSTALLABLE onEdit Trigger ────────────────────────────────────
 
 function onEditInstallable(e) {
   if (!e || !e.range) return;
 
+  var lock = LockService.getDocumentLock();
+  var hasLock = false;
+
   try {
+    // Acquire lock to prevent race conditions during rapid cell edits
+    hasLock = lock.tryLock(5000);
+    if (!hasLock) {
+      Logger.log('⚠️ Could not obtain document lock for onEditInstallable; skipping concurrent trigger.');
+      return;
+    }
+
     var range = e.range;
     var sheet = range.getSheet();
     var sheetName = sheet.getName();
+
+    // If Roster was edited, invalidate cached roster data
+    if (sheetName.toLowerCase() === 'roster') {
+      invalidateRosterCache();
+      return;
+    }
 
     // Skip system sheets
     if (isSystemSheet(sheetName)) return;
@@ -128,7 +57,7 @@ function onEditInstallable(e) {
     // Mark as pending (single range access to reduce RPC calls)
     sheet.getRange(row, statusCol).setValue('PENDING').setNote('Verifying with OJ server...');
 
-    // Lookup student in Roster
+    // Lookup student in Roster (cached)
     var studentInfo = getStudentInfoFromRoster(sheetName);
     if (!studentInfo) {
       markAuditRow(sheet, row, 'NO_ROSTER', 'Matric ID not found in Roster sheet');
@@ -152,39 +81,67 @@ function onEditInstallable(e) {
         markAuditRow(e.range.getSheet(), errRow, 'ERROR', err.message || 'Verification error');
       } catch (me) { /* ignore */ }
     }
+  } finally {
+    if (hasLock) {
+      lock.releaseLock();
+    }
   }
 }
 
 /**
  * Get the status column index (1-indexed).
- * Column 15 (O) if Column 13 (M) is "Hint?", otherwise Column 14 (N).
+ * Aligned with hasHintColumn: Column 15 (O) if "Hint?" exists, otherwise Column 14 (N).
  */
 function getStatusColumnIndex(sheet) {
   try {
+    if (typeof hasHintColumn === 'function') {
+      return hasHintColumn(sheet) ? 15 : 14;
+    }
     var h13 = String(sheet.getRange(2, 13).getValue() || '').toLowerCase().trim();
-    if (h13 === 'hint?' || h13 === 'hint') {
+    if (h13.indexOf('hint') !== -1) {
       return 15; // Column O
     }
   } catch (e) { /* ignore */ }
   return 14; // Column N (legacy schema)
 }
 
-// ─── Roster Lookup ─────────────────────────────────────────────────
+// ─── Roster Lookup (with CacheService & Memory Cache) ──────────────
 
-function getStudentInfoFromRoster(matricId) {
-  if (!matricId) return null;
-  var targetId = String(matricId).trim();
+var _rosterMemoryCache = null;
+var _rosterMemoryCacheTs = 0;
+var ROSTER_CACHE_TTL_SEC = 900; // 15 minutes
+
+function invalidateRosterCache() {
+  _rosterMemoryCache = null;
+  _rosterMemoryCacheTs = 0;
+  try {
+    CacheService.getScriptCache().remove('roster_data_map');
+  } catch (e) { /* ignore */ }
+}
+
+function getRosterMap() {
+  var now = Date.now();
+  if (_rosterMemoryCache && (now - _rosterMemoryCacheTs < ROSTER_CACHE_TTL_SEC * 1000)) {
+    return _rosterMemoryCache;
+  }
+
+  var cache = CacheService.getScriptCache();
+  try {
+    var cachedJson = cache.get('roster_data_map');
+    if (cachedJson) {
+      _rosterMemoryCache = JSON.parse(cachedJson);
+      _rosterMemoryCacheTs = now;
+      return _rosterMemoryCache;
+    }
+  } catch (e) { /* fallback to sheet */ }
 
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var roster = ss.getSheetByName('Roster');
-  if (!roster) return null;
+  if (!roster) return {};
 
   var data = roster.getDataRange().getValues();
-  if (data.length < 2) return null;
+  if (data.length < 2) return {};
 
-  // Header detection with fallback to user's layout:
-  // Col A(0): Email, Col B(1): Matric ID, Col C(2): Name, Col D(3): CF Handle,
-  // Col E(4): LeetCode Handle, Col F(5): Atcoder Handle, Col G(6): Role
   var headers = data[0].map(function(h) { return String(h || '').toLowerCase().trim(); });
   var colEmail = headers.indexOf('email');
   var colMatric = headers.indexOf('matric id');
@@ -203,23 +160,40 @@ function getStudentInfoFromRoster(matricId) {
   if (colName === -1) colName = 2;
   if (colCF === -1) colCF = 3;
   if (colLC === -1) colLC = 4;
-  if (colAC === -1) colAC = 5; // Column F: Atcoder Handle
-  if (colRole === -1) colRole = 6; // Column G: Role
+  if (colAC === -1) colAC = 5;
+  if (colRole === -1) colRole = 6;
 
+  var map = {};
   for (var i = 1; i < data.length; i++) {
-    if (String(data[i][colMatric] || '').trim() === targetId) {
-      return {
-        email: String(data[i][colEmail] || '').trim(),
-        matricId: String(data[i][colMatric] || '').trim(),
-        name: String(data[i][colName] || '').trim(),
-        cfHandle: String(data[i][colCF] || '').trim(),
-        leetCodeHandle: String(data[i][colLC] || '').trim(),
-        atCoderHandle: String(data[i][colAC] || '').trim(),
-        role: String(data[i][colRole] || '').trim()
-      };
-    }
+    var mId = String(data[i][colMatric] || '').trim();
+    if (!mId) continue;
+    map[mId] = {
+      email: String(data[i][colEmail] || '').trim(),
+      matricId: mId,
+      name: String(data[i][colName] || '').trim(),
+      cfHandle: String(data[i][colCF] || '').trim(),
+      leetCodeHandle: String(data[i][colLC] || '').trim(),
+      atCoderHandle: String(data[i][colAC] || '').trim(),
+      role: String(data[i][colRole] || '').trim()
+    };
   }
-  return null;
+
+  _rosterMemoryCache = map;
+  _rosterMemoryCacheTs = now;
+  try {
+    var str = JSON.stringify(map);
+    if (str.length < 95000) {
+      cache.put('roster_data_map', str, ROSTER_CACHE_TTL_SEC);
+    }
+  } catch (ce) { /* ignore cache put error */ }
+
+  return map;
+}
+
+function getStudentInfoFromRoster(matricId) {
+  if (!matricId) return null;
+  var rosterMap = getRosterMap();
+  return rosterMap[String(matricId).trim()] || null;
 }
 
 // ─── Apply Verification Result to Row ──────────────────────────────
@@ -236,15 +210,13 @@ function applyVerificationToRow(sheet, row, result) {
     bg = '#ecfdf5';
     font = '#065f46';
 
-    // Update row with authoritative API values
-    sheet.getRange(row, 7).setValue(result.verdict);          // G: Verdict
-    sheet.getRange(row, 8).setValue(result.submissionCount);  // H: Subs
-    sheet.getRange(row, 11).setValue(result.category);        // K: Category
-    sheet.getRange(row, 12).setValue(result.rating);          // L: Rating
+    // Batch update row with authoritative API values (2 RPCs instead of 4)
+    sheet.getRange(row, 7, 1, 2).setValues([[result.verdict, result.submissionCount]]); // G:H
+    sheet.getRange(row, 11, 1, 2).setValues([[result.category, result.rating]]);         // K:L
 
   } else if (result.verificationType === 'MANUAL') {
     status = 'MANUAL';
-    note = '⚠ Manual platform (' + result.category + '). Max 5/day.';
+    note = '⚠ Manual platform (' + result.category + ').';
     bg = '#fffbeb';
     font = '#92400e';
 
@@ -265,3 +237,4 @@ function markAuditRow(sheet, row, status, note) {
   sheet.getRange(row, statusCol).setValue(status).setNote(note);
   sheet.getRange(row, 6, 1, statusCol - 6).setBackground('#fef2f2').setFontColor('#991b1b');
 }
+

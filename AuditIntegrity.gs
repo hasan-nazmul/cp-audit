@@ -221,14 +221,14 @@ function runStudentAudit(studentInfo, logRows, cfIndex, rollingAvgRating, prevWe
       }
 
       // 4. MULTI_HANDLE (Conflicting handle submissions in the same contest)
-      var contestHandlesMap = cfIndex.contestHandles[cid];
+      var contestHandlesMap = (cfIndex && cfIndex.contestHandles) ? cfIndex.contestHandles[cid] : null;
       if (contestHandlesMap && Object.keys(contestHandlesMap).length > 1) {
         anomalies.push(createAnomalyObject(row, 'MULTI_HANDLE',
           'Contest ' + cid + ' has submissions from multiple handles: ' + Object.keys(contestHandlesMap).join(', '), 'FLAGGED', submissionLinks));
       }
 
       // 5. SKIPPED_CHAIN (Suspicious SKIPPED verdict with multi-handle AC)
-      var hasSkippedVerdict = truth.subs.some(function(s) { return s.v === 'SKIPPED'; });
+      var hasSkippedVerdict = (truth.subs && Array.isArray(truth.subs)) ? truth.subs.some(function(s) { return s.v === 'SKIPPED'; }) : false;
       if (hasSkippedVerdict && truth.bestVerdict === 'OK' && Object.keys(truth.handles).length > 1) {
         anomalies.push(createAnomalyObject(row, 'SKIPPED_CHAIN',
           'SKIPPED submissions detected alongside multi-handle AC pattern', 'FLAGGED', submissionLinks));
@@ -240,7 +240,7 @@ function runStudentAudit(studentInfo, logRows, cfIndex, rollingAvgRating, prevWe
         if (acDateObj >= weekStart && acDateObj <= weekEnd) {
           acTimes.push({
             time: truth.acTime,
-            rating: row.rating || (truth.ratings.length > 0 ? Math.max.apply(null, truth.ratings) : 0),
+            rating: row.rating || (truth.ratings && truth.ratings.length > 0 ? Math.max.apply(null, truth.ratings) : 0),
             row: row,
             contestId: cid
           });

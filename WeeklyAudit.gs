@@ -21,16 +21,29 @@
  * ═══════════════════════════════════════════════════════════════════
  */
 
-var AUDIT_CACHE_TTL = 900;           // 15 min cache for submissions
-var AUDIT_BURST_WINDOW_MIN = 15;     // 15 min burst window
-var AUDIT_BURST_THRESHOLD = 3;       // 3+ solves in window
-var AUDIT_RATING_SPIKE_DELTA = 500;  // 500+ above 4-week rolling avg
-var AUDIT_TIME_ANOMALY_CAP_MIN = 5;  // <5 min solve time
-var AUDIT_PERSONAL_DELTA_BURST = 200;
-var AUDIT_PERSONAL_DELTA_TIME = 200;
-var AUDIT_WEEK_DAYS = 7;
-var AUDIT_PARALLEL_BATCH_SIZE = 5;   // 5 concurrent requests per sub-batch
-var AUDIT_THROTTLE_MS = 250;         // 250ms throttle between sub-batches
+function getAuditConfigNum(key, defaultVal) {
+  try {
+    if (typeof PropertiesService !== 'undefined' && PropertiesService.getScriptProperties) {
+      var val = PropertiesService.getScriptProperties().getProperty(key);
+      if (val !== null && val !== '') {
+        var n = Number(val);
+        if (!isNaN(n)) return n;
+      }
+    }
+  } catch (e) { /* fallback */ }
+  return defaultVal;
+}
+
+var AUDIT_CACHE_TTL = getAuditConfigNum('AUDIT_CACHE_TTL', 900);
+var AUDIT_BURST_WINDOW_MIN = getAuditConfigNum('AUDIT_BURST_WINDOW_MIN', 15);
+var AUDIT_BURST_THRESHOLD = getAuditConfigNum('AUDIT_BURST_THRESHOLD', 3);
+var AUDIT_RATING_SPIKE_DELTA = getAuditConfigNum('AUDIT_RATING_SPIKE_DELTA', 500);
+var AUDIT_TIME_ANOMALY_CAP_MIN = getAuditConfigNum('AUDIT_TIME_ANOMALY_CAP_MIN', 5);
+var AUDIT_PERSONAL_DELTA_BURST = getAuditConfigNum('AUDIT_PERSONAL_DELTA_BURST', 200);
+var AUDIT_PERSONAL_DELTA_TIME = getAuditConfigNum('AUDIT_PERSONAL_DELTA_TIME', 200);
+var AUDIT_WEEK_DAYS = getAuditConfigNum('AUDIT_WEEK_DAYS', 7);
+var AUDIT_PARALLEL_BATCH_SIZE = getAuditConfigNum('AUDIT_PARALLEL_BATCH_SIZE', 5);
+var AUDIT_THROTTLE_MS = getAuditConfigNum('AUDIT_THROTTLE_MS', 250);
 
 /* ═══════════════════════════════════════════════════════════════════
    MAIN AUDIT WORKFLOW
@@ -42,9 +55,19 @@ var AUDIT_THROTTLE_MS = 250;         // 250ms throttle between sub-batches
  * Run weekly (e.g. Sunday 11:00 PM) before history archive.
  */
 function weeklyAuditAndHistory() {
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var now = new Date();
-  var auditStartMs = Date.now();
+  var lock = LockService.getScriptLock();
+  var hasLock = false;
+
+  try {
+    hasLock = lock.tryLock(30000);
+    if (!hasLock) {
+      Logger.log('⚠️ Could not obtain script lock for weeklyAuditAndHistory; another instance is already running.');
+      return;
+    }
+
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var now = new Date();
+    var auditStartMs = Date.now();
   var weekEnd = new Date(now);
   var weekStart = new Date(now);
   weekStart.setDate(weekStart.getDate() - AUDIT_WEEK_DAYS);
@@ -143,14 +166,19 @@ function weeklyAuditAndHistory() {
       var studentACHandles = sanitizeHandles(studentInfo.atCoderHandle, 'atcoder');
       var acIndex = buildAtCoderSubmissionIndex(studentACHandles, cohortAtCoderMap);
 
-      // Read student log rows for the week
-      var logRows = readStudentWeekLog(sheet, weekStart, weekEnd);
+      // Single-pass sheet read: read columns 6 to 15 once to avoid redundant RPCs
+      var lastRow = sheet.getLastRow();
+      var hasHintCol = hasHintColumn(sheet);
+      var preloadedData = lastRow >= 4 ? sheet.getRange(4, 6, lastRow - 3, 10).getValues() : [];
+
+      // Read student log rows for the week using preloaded data
+      var logRows = readStudentWeekLog(sheet, weekStart, weekEnd, preloadedData, hasHintCol);
 
       // Fetch previous week stats from memory map
       var prevWeekStats = prevStatsMap[studentInfo.matricId] || null;
 
-      // Compute rolling 4-week average rating
-      var rollingAvgRating = computeStudentRollingAvgRating(sheet);
+      // Compute rolling 4-week average rating using preloaded data
+      var rollingAvgRating = computeStudentRollingAvgRating(sheet, preloadedData);
 
       // Run authoritative audit (now includes AtCoder index)
       var audit = runStudentAudit(studentInfo, logRows, cfIndex, rollingAvgRating, prevWeekStats, weekStart, weekEnd, acIndex);
@@ -166,8 +194,17 @@ function weeklyAuditAndHistory() {
         cohortConcerns.push({ student: studentInfo, notes: audit.concerns });
       }
 
-      // Accumulate logs and rows for batch processing
-      allCohortLogs.push({ studentInfo: studentInfo, logRows: logRows, audit: audit, sheet: sheet, cfIndex: cfIndex, acIndex: acIndex });
+      // Accumulate logs and rows for batch processing (including preloaded data)
+      allCohortLogs.push({
+        studentInfo: studentInfo,
+        logRows: logRows,
+        audit: audit,
+        sheet: sheet,
+        cfIndex: cfIndex,
+        acIndex: acIndex,
+        preloadedData: preloadedData,
+        hasHintCol: hasHintCol
+      });
       prepareAuditLogRows(auditLogRowsToWrite, weekStart, weekEnd, studentInfo, sheet, audit.anomalies, audit.stats);
     } catch (studentAuditErr) {
       Logger.log('⚠️ Error auditing student ' + (studentInfo.matricId || studentInfo.name || i) + ': ' + studentAuditErr.message);
@@ -186,8 +223,8 @@ function weeklyAuditAndHistory() {
       var stAudit = logEntry.audit;
       var stCfIdx = logEntry.cfIndex;
 
-      var progressionAnalysis = analyzeRatingProgression(stSheet, stInfo, stCfIdx, cohortSubmissionsMap, cohortAtCoderMap);
-      var tagAnalysis = analyzeTagWeaknesses(stSheet, stInfo, stCfIdx, cohortSubmissionsMap, cohortAtCoderMap, progressionAnalysis.currentTier);
+      var progressionAnalysis = analyzeRatingProgression(stSheet, stInfo, stCfIdx, cohortSubmissionsMap, cohortAtCoderMap, logEntry.preloadedData, logEntry.hasHintCol);
+      var tagAnalysis = analyzeTagWeaknesses(stSheet, stInfo, stCfIdx, cohortSubmissionsMap, cohortAtCoderMap, progressionAnalysis.currentTier, logEntry.preloadedData, logEntry.hasHintCol);
       var coachingSummary = generateStudentCoachingSummary(progressionAnalysis, tagAnalysis, stAudit.stats, prevStatsMap[stInfo.matricId] || null);
 
       stAudit.coachingSummary = coachingSummary;
@@ -231,8 +268,18 @@ function weeklyAuditAndHistory() {
   }
   Logger.log('⏱ Step 5 (AuditLog Write) completed in ' + (Date.now() - stepStart) + 'ms — ' + auditLogRowsToWrite.length + ' rows written');
 
-  // ── Step 6: History Sheet Update (Disabled — AuditLog is the authoritative ledger) ──
-  // updateHistoryWithAudit(ss, weekStart, weekEnd, allStudentStats, cohortAnomalies);
+  // ── Step 6: History Sheet Update (Configurable Archive) ──
+  var enableHistoryArchive = PropertiesService.getScriptProperties().getProperty('ENABLE_HISTORY_ARCHIVE');
+  if (enableHistoryArchive === 'true' || (enableHistoryArchive !== 'false' && ss.getSheetByName('History'))) {
+    try {
+      updateHistoryWithAudit(ss, weekStart, weekEnd, allStudentStats, cohortAnomalies);
+      Logger.log('✅ Step 6: History sheet updated with weekly archive.');
+    } catch (histErr) {
+      Logger.log('⚠️ Could not update History sheet: ' + histErr.message);
+    }
+  } else {
+    Logger.log('ℹ️ Step 6: History archiving skipped (AuditLog is the authoritative ledger).');
+  }
 
   // ── Step 7: Cohort Analytics & AI Insights (Isolated) ──
   stepStart = Date.now();
@@ -344,4 +391,9 @@ function weeklyAuditAndHistory() {
   }
   Logger.log('⏱ Step 8 (Email Dispatch) completed in ' + (Date.now() - stepStart) + 'ms — ' + studentsToEmail.length + ' student emails sent');
   Logger.log('═══ AUDIT COMPLETE — Total elapsed: ' + (Date.now() - auditStartMs) + 'ms ═══');
+  } finally {
+    if (hasLock) {
+      lock.releaseLock();
+    }
+  }
 }

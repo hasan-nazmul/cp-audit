@@ -162,18 +162,16 @@ function isHintPresent(val) {
  * Read student log rows for the week in a single 2D range read.
  * Dynamically adjusts column mapping if 'Hint?' column (Col 13) is present.
  */
-function readStudentWeekLog(sheet, weekStart, weekEnd) {
-  var lastRow = sheet.getLastRow();
+function readStudentWeekLog(sheet, weekStart, weekEnd, preloadedData, preloadedHasHint) {
   var rows = [];
-  if (lastRow < 4) return rows;
+  var hasHintCol = (preloadedHasHint !== undefined) ? preloadedHasHint : (sheet ? hasHintColumn(sheet) : false);
+  var data = preloadedData;
 
-  var hasHintCol = hasHintColumn(sheet);
-  // Read columns F(6) through O(15) (10 columns):
-  // When Hint? is present (Col 13 / M):
-  // Col 6(F): Link, 7(G): Verdict, 8(H): Subs, 9(I): Time, 10(J): Date, 11(K): Category, 12(L): Rating, 13(M): Hint?, 14(N): Comment, 15(O): Status
-  // Legacy layout (no Hint?):
-  // Col 13(M): Comment, 14(N): Status, 15(O): Note
-  var data = sheet.getRange(4, 6, lastRow - 3, 10).getValues();
+  if (!data) {
+    var lastRow = sheet ? sheet.getLastRow() : 0;
+    if (lastRow < 4) return rows;
+    data = sheet.getRange(4, 6, lastRow - 3, 10).getValues();
+  }
 
   for (var r = 0; r < data.length; r++) {
     var rowNum = r + 4;
@@ -212,7 +210,8 @@ function readStudentWeekLog(sheet, weekStart, weekEnd) {
       problemIndex: parsed.problemIndex,
       problemId: parsed.problemId || '',
       titleSlug: parsed.titleSlug,
-      canonicalName: parsed.canonicalName || link
+      canonicalName: parsed.canonicalName || link,
+      isGym: parsed.isGym
     });
   }
 
@@ -222,11 +221,23 @@ function readStudentWeekLog(sheet, weekStart, weekEnd) {
 /**
  * Compute student rolling 4-week average rating from all historical rows.
  */
-function computeStudentRollingAvgRating(sheet) {
-  var lastRow = sheet.getLastRow();
-  if (lastRow < 4) return 1000;
+function computeStudentRollingAvgRating(sheet, preloadedData) {
+  var data = preloadedData;
+  var catColIdx = 0;
+  var ratingColIdx = 1;
 
-  var data = sheet.getRange(4, 11, lastRow - 3, 2).getValues(); // Cols K(Category), L(Rating)
+  if (preloadedData && preloadedData.length > 0 && preloadedData[0].length >= 7) {
+    // 10-column slice starting at Col 6: Col 11 (Cat) is index 5, Col 12 (Rating) is index 6
+    catColIdx = 5;
+    ratingColIdx = 6;
+  } else if (!data) {
+    var lastRow = sheet ? sheet.getLastRow() : 0;
+    if (lastRow < 4) return 1000;
+    data = sheet.getRange(4, 11, lastRow - 3, 2).getValues();
+    catColIdx = 0;
+    ratingColIdx = 1;
+  }
+
   var sum = 0, count = 0;
 
   for (var i = 0; i < data.length; i++) {
@@ -363,7 +374,10 @@ function bulkWriteAuditLog(ss, rowsToWrite) {
   range.setFontWeights(weightMatrix);
   range.setFontColors(colorMatrix);
 
-  // Add a bold bottom divider line below this week's batch to clearly separate it from prior weeks
+  // Add a bold bottom divider line below this week's batch to clearly separate it from prior weeks.
+  // Note: Newly inserted rows occupy row 2 through row (1 + rowsToWrite.length).
+  // Applying bottom: true on row (1 + rowsToWrite.length) targets the exact gridline separating
+  // the current week's batch from previous weeks' rows pushed below it.
   if (rowsToWrite.length > 0) {
     sheet.getRange(1 + rowsToWrite.length, 1, 1, 15)
       .setBorder(null, null, true, null, null, null, '#0f172a', SpreadsheetApp.BorderStyle.SOLID_THICK);
@@ -502,12 +516,3 @@ function getColumnString(columnNumber) {
   }
   return columnName;
 }
-
-/**
- * Compute daily variance of log rows to detect bursty vs consistent practice patterns.
- * Returns standard deviation of daily solve counts.
- * Low values (< 1.5) indicate consistent daily practice.
- * High values (> 4) indicate bursty, concentrated sessions.
- * @param {Object[]} logRows - Student log rows for the week.
- * @returns {number} Standard deviation of daily solve distribution.
- */
