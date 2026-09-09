@@ -183,7 +183,8 @@ function readStudentWeekLog(sheet, weekStart, weekEnd, preloadedData, preloadedH
     if (!rowDate || rowDate < weekStart || rowDate > weekEnd) continue;
 
     var parsed = parseProblemServerInput(link);
-    if (parsed.platform === 'codeforces_unsupported') continue;
+    var isGymProb = parsed.isGym || (Number(parsed.contestId) >= 100000) || (parsed.category === 'Gym') || /gym/i.test(link);
+    var isUnsupportedCf = (parsed.platform === 'codeforces_unsupported') || /codeforces\.com\/(?:group|edu|newcomer|acmsguru)\//i.test(link);
 
     var rawHintVal = hasHintCol ? row[7] : '';
     var hintUsed = isHintPresent(rawHintVal);
@@ -198,20 +199,21 @@ function readStudentWeekLog(sheet, weekStart, weekEnd, preloadedData, preloadedH
       claimedSubs: toNum(row[2]),
       time: toNum(row[3]),
       date: rowDate,
-      category: String(row[5] || '').trim(),
+      category: isGymProb ? 'Gym' : (isUnsupportedCf ? 'Other OJ' : String(row[5] || '').trim()),
       rating: toNum(row[6]),
       rawHint: rawHintVal,
       hasHint: hintUsed,
       comment: commentVal,
       verStatus: verStatusVal,
       verNote: verNoteVal,
-      platform: parsed.platform,
+      platform: (isGymProb || isUnsupportedCf) ? 'codeforces' : parsed.platform,
       contestId: parsed.contestId,
       problemIndex: parsed.problemIndex,
       problemId: parsed.problemId || '',
       titleSlug: parsed.titleSlug,
       canonicalName: parsed.canonicalName || link,
-      isGym: parsed.isGym
+      isGym: isGymProb,
+      isUnsupportedCf: isUnsupportedCf
     });
   }
 
@@ -249,7 +251,7 @@ function computeStudentRollingAvgRating(sheet, preloadedData) {
     }
   }
 
-  return count > 0 ? (sum / count) : 1000;
+  return count > 0 ? roundUp2(sum / count) : 1000;
 }
 
 
@@ -515,4 +517,38 @@ function getColumnString(columnNumber) {
     columnNumber = Math.floor((columnNumber - 1) / 26);
   }
   return columnName;
+}
+
+/**
+ * Rounds a number UP to at most 2 digits after the decimal point.
+ * Ensures numbers sent in emails/reports do not leak 14+ float digits.
+ * If integer, returns the integer unchanged.
+ * Example: 85.71428571428571 -> 85.72, 33.333333333333336 -> 33.34, 100 -> 100.
+ *
+ * @param {*} val - Number or numeric string.
+ * @returns {number} Value rounded UP to at most 2 decimal places.
+ */
+function roundUp2(val) {
+  if (val === null || val === undefined || val === '') return 0;
+  var n = Number(val);
+  if (isNaN(n)) return val;
+  if (Math.floor(n) === n) return n;
+  var factor = 100;
+  var rounded = Math.ceil(n * factor) / factor;
+  return Number(rounded.toFixed(2));
+}
+
+/**
+ * Formats a number rounded UP to at most 2 digits after decimal point as a string.
+ * @param {*} val
+ * @returns {string}
+ */
+function formatRoundUp2(val) {
+  if (val === null || val === undefined || val === '') return '0';
+  var n = Number(val);
+  if (isNaN(n)) return String(val);
+  if (Math.floor(n) === n) return String(n);
+  var factor = 100;
+  var rounded = Math.ceil(n * factor) / factor;
+  return rounded.toFixed(2);
 }

@@ -238,7 +238,8 @@ function verifyProblemServer(urlOrCode, studentInfo, studentSheet, manualVerdict
   }
 
   // ── 2. Codeforces Auto-Verified Problem ───────────────────────────
-  if (parsed.platform === 'codeforces' && !parsed.isGym) {
+  var isGymOrNonContest = parsed.isGym || (Number(parsed.contestId) >= 100000) || (parsed.platform === 'codeforces_unsupported');
+  if (parsed.platform === 'codeforces' && !isGymOrNonContest) {
     if (cfHandles.length === 0) {
       throw new Error('No valid Codeforces handle registered in course roster for student ' + (studentInfo.matricId || 'N/A') + '. Please update your handle in the Roster sheet.');
     }
@@ -601,8 +602,8 @@ function parseProblemServerInput(rawInput) {
   // generic URL validator can never accidentally reject a valid CF link.
   if (u.indexOf('codeforces.com') !== -1) {
 
-    // Unsupported CF paths (groups, edu, newcomer rounds)
-    if (/codeforces\.com\/(?:group|edu|newcomer)\//i.test(u)) {
+    // Unsupported CF paths (groups, edu, newcomer rounds, acmsguru)
+    if (/codeforces\.com\/(?:group|edu|newcomer|acmsguru|problemsets\/acmsguru)\//i.test(u)) {
       res.platform = 'codeforces_unsupported';
       res.category = 'Other OJ';
       return res;
@@ -627,12 +628,19 @@ function parseProblemServerInput(rawInput) {
     // Problems URL: /problems/1768/A  (alternate path)
     var cfUrlMatch = raw.match(/(?:contest|problemset\/problem|problems)\/(\d+)\/(?:problem\/)?([a-zA-Z]\d?)/i);
     if (cfUrlMatch) {
-      res.isGym = false;
       res.contestId = cfUrlMatch[1];
       res.problemIndex = cfUrlMatch[2].toUpperCase();
-      res.category = 'Codeforces';
-      res.canonicalName = 'CF ' + res.contestId + res.problemIndex;
-      res.canonicalUrl = 'https://codeforces.com/problemset/problem/' + res.contestId + '/' + res.problemIndex;
+      if (Number(res.contestId) >= 100000) {
+        res.isGym = true;
+        res.category = 'Gym';
+        res.canonicalName = 'CF Gym ' + res.contestId + res.problemIndex;
+        res.canonicalUrl = 'https://codeforces.com/gym/' + res.contestId + '/problem/' + res.problemIndex;
+      } else {
+        res.isGym = false;
+        res.category = 'Codeforces';
+        res.canonicalName = 'CF ' + res.contestId + res.problemIndex;
+        res.canonicalUrl = 'https://codeforces.com/problemset/problem/' + res.contestId + '/' + res.problemIndex;
+      }
       return res;
     }
 
@@ -640,12 +648,19 @@ function parseProblemServerInput(rawInput) {
     // e.g. https://codeforces.com/1768/A or mangled URLs
     var cfPathFallback = raw.match(/codeforces\.com\/.*?(\d{1,6})\/([a-zA-Z]\d?)/i);
     if (cfPathFallback) {
-      res.isGym = false;
       res.contestId = cfPathFallback[1];
       res.problemIndex = cfPathFallback[2].toUpperCase();
-      res.category = 'Codeforces';
-      res.canonicalName = 'CF ' + res.contestId + res.problemIndex;
-      res.canonicalUrl = 'https://codeforces.com/problemset/problem/' + res.contestId + '/' + res.problemIndex;
+      if (Number(res.contestId) >= 100000) {
+        res.isGym = true;
+        res.category = 'Gym';
+        res.canonicalName = 'CF Gym ' + res.contestId + res.problemIndex;
+        res.canonicalUrl = 'https://codeforces.com/gym/' + res.contestId + '/problem/' + res.problemIndex;
+      } else {
+        res.isGym = false;
+        res.category = 'Codeforces';
+        res.canonicalName = 'CF ' + res.contestId + res.problemIndex;
+        res.canonicalUrl = 'https://codeforces.com/problemset/problem/' + res.contestId + '/' + res.problemIndex;
+      }
       return res;
     }
 

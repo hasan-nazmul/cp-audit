@@ -14,6 +14,17 @@
    STRICT INTEGRITY AUDIT ENGINE
    ═══════════════════════════════════════════════════════════════════ */
 
+function _roundUp2Helper(val) {
+  if (typeof roundUp2 === 'function') return roundUp2(val);
+  if (val === null || val === undefined || val === '') return 0;
+  var n = Number(val);
+  if (isNaN(n)) return val;
+  if (Math.floor(n) === n) return n;
+  var factor = 100;
+  var rounded = Math.ceil(n * factor) / factor;
+  return Number(rounded.toFixed(2));
+}
+
 /**
  * Run authoritative multi-vector integrity audit on a student's weekly submissions.
  */
@@ -23,12 +34,16 @@ function runStudentAudit(studentInfo, logRows, cfIndex, rollingAvgRating, prevWe
   var acTimes = [];
   var seenAcProblems = {};
 
-  var personalBurstThreshold = rollingAvgRating + AUDIT_PERSONAL_DELTA_BURST;
-  var personalTimeThreshold = rollingAvgRating + AUDIT_PERSONAL_DELTA_TIME;
+  var personalBurstThreshold = _roundUp2Helper(rollingAvgRating + AUDIT_PERSONAL_DELTA_BURST);
+  var personalTimeThreshold = _roundUp2Helper(rollingAvgRating + AUDIT_PERSONAL_DELTA_TIME);
 
-  // Check if student has no valid CF handle registered
+  // Check if student has no valid CF handle registered (only for standard contest/problemset CF)
   if (cfIndex.handles.length === 0) {
-    var hasCFProblems = logRows.some(function(r) { return r.platform === 'codeforces'; });
+    var hasCFProblems = logRows.some(function(r) {
+      var isGym = r.isGym || (r.category === 'Gym') || (Number(r.contestId) >= 100000);
+      var isUnsupported = (r.platform === 'codeforces_unsupported') || r.isUnsupportedCf;
+      return r.platform === 'codeforces' && !isGym && !isUnsupported;
+    });
     if (hasCFProblems) {
       anomalies.push({
         rowNum: '-',
@@ -136,8 +151,11 @@ function runStudentAudit(studentInfo, logRows, cfIndex, rollingAvgRating, prevWe
       continue;
     }
 
-    // ── Non-Codeforces / Non-AtCoder Problems (Manual / LeetCode / Other OJ) ──
-    if (row.platform !== 'codeforces') {
+    // ── Non-Codeforces / Non-AtCoder / CF Gym & Non-Contest Problems (Manual / LeetCode / Gym / Other OJ) ──
+    var isGymProblem = row.isGym || (row.category === 'Gym') || (row.category === 'CF Gym') || (Number(row.contestId) >= 100000) || /gym/i.test(row.link || '');
+    var isUnsupportedCf = row.platform === 'codeforces_unsupported' || row.isUnsupportedCf || /codeforces\.com\/(?:gym|group|edu|newcomer|acmsguru)\//i.test(row.link || '') || (!row.contestId && /codeforces\.com/i.test(row.link || ''));
+
+    if (row.platform !== 'codeforces' || isGymProblem || isUnsupportedCf) {
       stats.totalTime += row.time;
       if (row.verdict === 'AC') {
         stats.totalSolves++;
@@ -302,8 +320,8 @@ function runStudentAudit(studentInfo, logRows, cfIndex, rollingAvgRating, prevWe
   }
 
   // Compute final statistics
-  stats.avgRating = stats.ratingCount > 0 ? Math.round(stats.ratingSum / stats.ratingCount) : 0;
-  stats.hintRate = stats.totalSolves > 0 ? Math.round((stats.hintCount / stats.totalSolves) * 100) : 0;
+  stats.avgRating = stats.ratingCount > 0 ? _roundUp2Helper(stats.ratingSum / stats.ratingCount) : 0;
+  stats.hintRate = stats.totalSolves > 0 ? _roundUp2Helper((stats.hintCount / stats.totalSolves) * 100) : 0;
   var topTag = '', topCount = 0;
   for (var tag in stats.tagCounts) {
     if (stats.tagCounts[tag] > topCount) { topCount = stats.tagCounts[tag]; topTag = tag; }
@@ -317,7 +335,7 @@ function runStudentAudit(studentInfo, logRows, cfIndex, rollingAvgRating, prevWe
   if (prevWeekStats) {
     var timeDelta = stats.totalTime - prevWeekStats.totalTime;
     var solveDelta = stats.totalSolves - prevWeekStats.totalSolves;
-    var ratingDelta = stats.avgRating - prevWeekStats.avgRating;
+    var ratingDelta = _roundUp2Helper(stats.avgRating - prevWeekStats.avgRating);
 
     if (timeDelta >= 60) {
       appreciations.push('Practice time increased by ' + timeDelta + ' min compared to last week. Fantastic dedication!');
@@ -335,7 +353,7 @@ function runStudentAudit(studentInfo, logRows, cfIndex, rollingAvgRating, prevWe
       appreciations.push('Average problem difficulty increased by +' + ratingDelta + ' points. Wonderful push on hard topics!');
     }
 
-    var dailyVariance = computeDailyVariance(logRows);
+    var dailyVariance = _roundUp2Helper(computeDailyVariance(logRows));
     if (dailyVariance > 4) {
       concerns.push('Practice was concentrated into a single burst. Spreading practice evenly across the week significantly improves algorithmic retention.');
     } else if (dailyVariance < 1.5 && stats.totalSolves >= 5) {

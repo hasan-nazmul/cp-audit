@@ -377,7 +377,7 @@ function aggregateCohortAnalytics(allCohortLogs, allStudentStats, cohortAnomalie
     }
   }
 
-  var cohortHintRate = totalSolves > 0 ? Math.round((totalHintSolves / totalSolves) * 100) : 0;
+  var cohortHintRate = totalSolves > 0 ? (typeof roundUp2 === 'function' ? roundUp2((totalHintSolves / totalSolves) * 100) : Number((Math.ceil((totalHintSolves / totalSolves) * 10000) / 100).toFixed(2))) : 0;
 
   return {
     highAttemptProblems: highAttemptProblems,
@@ -405,7 +405,7 @@ function generateInstructorAIReport(cohortAnalytics, allStudentStats, cohortAnom
 
   var tagList = Object.keys(cohortAnalytics.tagMap).map(function(t) {
     var d = cohortAnalytics.tagMap[t];
-    var avg = d.ratingCount > 0 ? Math.round(d.ratingSum / d.ratingCount) : 'N/A';
+    var avg = d.ratingCount > 0 ? (typeof roundUp2 === 'function' ? roundUp2(d.ratingSum / d.ratingCount) : Number((Math.ceil((d.ratingSum / d.ratingCount) * 100) / 100).toFixed(2))) : 'N/A';
     return '- **' + t + '**: ' + d.solves + ' solves (Avg Rating: ' + avg + ') | Examples: ' + d.sampleProblems.join(', ');
   }).join('\n') || '- General practice logged.';
 
@@ -418,7 +418,8 @@ function generateInstructorAIReport(cohortAnalytics, allStudentStats, cohortAnom
   }).slice(0, 8).join('\n') || '- All student tracksheets are clean.';
 
   var improversList = cohortAnalytics.topImprovers.map(function(im) {
-    return '- **' + im.student.name + '** (' + im.student.matricId + '): ' + im.stats.totalSolves + ' solves, Avg Rating ' + im.stats.avgRating + ' (' + im.appreciations.join('; ') + ')';
+    var imAvgRating = typeof roundUp2 === 'function' ? roundUp2(im.stats.avgRating) : im.stats.avgRating;
+    return '- **' + im.student.name + '** (' + im.student.matricId + '): ' + im.stats.totalSolves + ' solves, Avg Rating ' + imAvgRating + ' (' + im.appreciations.join('; ') + ')';
   }).slice(0, 8).join('\n') || '- Steady cohort pace.';
 
   var systemInstruction = 'You are an expert Competitive Programming Head Coach and curriculum architect for university course CSE-1230. Deliver high-signal, actionable pedagogical analytics.\n' +

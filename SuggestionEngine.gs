@@ -17,6 +17,17 @@
 
 /* ─── CONFIGURATION ────────────────────────────────────────────── */
 
+function _roundUp2Helper(val) {
+  if (typeof roundUp2 === 'function') return roundUp2(val);
+  if (val === null || val === undefined || val === '') return 0;
+  var n = Number(val);
+  if (isNaN(n)) return val;
+  if (Math.floor(n) === n) return n;
+  var factor = 100;
+  var rounded = Math.ceil(n * factor) / factor;
+  return Number(rounded.toFixed(2));
+}
+
 var SUGGESTION_CONFIG = {
   // Solves in a "must" topic before considered competent at current tier
   MUST_COMPETENCY_COUNT: 5,
@@ -708,7 +719,7 @@ function analyzeTopicGaps(currentTier, dist) {
   // 4. Over-Reliance Detection
   for (var topic in dist.tagCounts) {
     if (totalSolved >= 10 && dist.tagCounts[topic] >= SUGGESTION_CONFIG.OVER_RELIANCE_MIN_SOLVES) {
-      var pct = Math.round((dist.tagCounts[topic] / totalSolved) * 100);
+      var pct = _roundUp2Helper((dist.tagCounts[topic] / totalSolved) * 100);
       if (pct >= SUGGESTION_CONFIG.OVER_RELIANCE_PERCENT) {
         overReliance.push({
           topic: topic,
@@ -890,7 +901,7 @@ function getStudentTagDistribution(sheet, handles, optCohortSubmissionsMap) {
             } else {
               dist.totalSolo++;
             }
-            dist.tagHintStats[topic].hintRate = Math.round((dist.tagHintStats[topic].hintCount / dist.tagHintStats[topic].solves) * 100);
+            dist.tagHintStats[topic].hintRate = _roundUp2Helper((dist.tagHintStats[topic].hintCount / dist.tagHintStats[topic].solves) * 100);
           }
           continue;
         }
@@ -916,12 +927,12 @@ function getStudentTagDistribution(sheet, handles, optCohortSubmissionsMap) {
         }
         dist.tagHintStats[topic].solves++;
         if (isHint) dist.tagHintStats[topic].hintCount++;
-        dist.tagHintStats[topic].hintRate = Math.round((dist.tagHintStats[topic].hintCount / dist.tagHintStats[topic].solves) * 100);
+        dist.tagHintStats[topic].hintRate = _roundUp2Helper((dist.tagHintStats[topic].hintCount / dist.tagHintStats[topic].solves) * 100);
       }
     }
   }
 
-  dist.avgRating = dist.ratingCount > 0 ? Math.round(dist.ratingSum / dist.ratingCount) : 0;
+  dist.avgRating = dist.ratingCount > 0 ? _roundUp2Helper(dist.ratingSum / dist.ratingCount) : 0;
   return dist;
 }
 

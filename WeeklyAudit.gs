@@ -257,7 +257,7 @@ function weeklyAuditAndHistory() {
           '',
           allStudentStats.reduce(function(sum, s) { return sum + (s.totalTime || 0); }, 0),
           allStudentStats.reduce(function(sum, s) { return sum + (s.totalSolves || 0); }, 0),
-          allStudentStats.length > 0 ? Math.round(allStudentStats.reduce(function(sum, s) { return sum + (s.avgRating || 0); }, 0) / allStudentStats.length) : ''
+          allStudentStats.length > 0 ? (typeof roundUp2 === 'function' ? roundUp2(allStudentStats.reduce(function(sum, s) { return sum + (s.avgRating || 0); }, 0) / allStudentStats.length) : Math.round(allStudentStats.reduce(function(sum, s) { return sum + (s.avgRating || 0); }, 0) / allStudentStats.length)) : ''
         ]
       };
       auditLogRowsToWrite.unshift(bannerRow);

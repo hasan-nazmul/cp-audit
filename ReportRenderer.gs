@@ -30,6 +30,17 @@ var RENDERER_THEME = {
 
 // ─── Math & Markdown Formatting Helpers ─────────────────────────────
 
+function _roundUp2Helper(val) {
+  if (typeof roundUp2 === 'function') return roundUp2(val);
+  if (val === null || val === undefined || val === '') return 0;
+  var n = Number(val);
+  if (isNaN(n)) return val;
+  if (Math.floor(n) === n) return n;
+  var factor = 100;
+  var rounded = Math.ceil(n * factor) / factor;
+  return Number(rounded.toFixed(2));
+}
+
 /**
  * Clean and normalize raw LaTeX math commands into readable plain text/Unicode for email.
  * @param {string} str
@@ -256,7 +267,7 @@ function generateFallbackInstructorReportHtml(cohortAnalytics, allStudentStats, 
     html += '<ul style="font-size:13px;">';
     for (var t = 0; t < tagKeys.length; t++) {
       var td = cohortAnalytics.tagMap[tagKeys[t]];
-      var avgR = td.ratingCount > 0 ? Math.round(td.ratingSum / td.ratingCount) : 'N/A';
+      var avgR = td.ratingCount > 0 ? _roundUp2Helper(td.ratingSum / td.ratingCount) : 'N/A';
       html += '<li style="margin-bottom:6px;"><strong>' + escHtml(tagKeys[t]) + '</strong>: ' + td.solves + ' solves (Avg Difficulty: ' + avgR + ') | Examples: ' + td.sampleProblems.slice(0, 3).join(', ') + '</li>';
     }
     html += '</ul>';
@@ -309,7 +320,7 @@ function renderStudentEmailHtml(studentInfo, anomalies, stats, appreciations, co
   var statusBadge = isClean ? '✅ All Verified' : (flagged.length > 0 ? '🚩 ' + flagged.length + ' Flag' + (flagged.length > 1 ? 's' : '') : '💡 ' + suspicious.length + ' Note' + (suspicious.length > 1 ? 's' : ''));
   var statusBadgeBg = isClean ? '#059669' : (flagged.length > 0 ? '#dc2626' : '#d97706');
 
-  var avgRating = stats ? stats.avgRating : 0;
+  var avgRating = stats ? _roundUp2Helper(stats.avgRating) : 0;
   var topTag = stats ? (stats.topTag || '—') : '—';
 
   var html = '<!DOCTYPE html><html><head><meta charset="utf-8">';
@@ -377,7 +388,7 @@ function renderStudentEmailHtml(studentInfo, anomalies, stats, appreciations, co
 
   // Hint Independence
   if (stats && stats.totalSolves > 0) {
-    var independenceRate = Math.max(100 - (stats.hintRate || 0), 0);
+    var independenceRate = _roundUp2Helper(Math.max(100 - (stats.hintRate || 0), 0));
     var indColor = independenceRate >= 70 ? '#059669' : (independenceRate >= 50 ? '#d97706' : '#dc2626');
     var indBg = independenceRate >= 70 ? '#ecfdf5' : (independenceRate >= 50 ? '#fffbeb' : '#fef2f2');
     var indBorder = independenceRate >= 70 ? '#a7f3d0' : (independenceRate >= 50 ? '#fde68a' : '#fecaca');
@@ -492,7 +503,7 @@ function renderStudentEmailHtml(studentInfo, anomalies, stats, appreciations, co
           for (var gi = 0; gi < tb.groups.length; gi++) {
             var grp = tb.groups[gi];
             var grpSoloText = grp.hintCount !== undefined ? ' <span style="color:#64748b;font-size:10px">(' + grp.soloCount + 's/' + grp.hintCount + 'h)</span>' : '';
-            groupStrs.push('G' + grp.groupIndex + ' (' + grp.solveCount + '): <strong>' + grp.avgTime + 'm</strong>' + grpSoloText);
+            groupStrs.push('G' + grp.groupIndex + ' (' + grp.solveCount + '): <strong>' + _roundUp2Helper(grp.avgTime) + 'm</strong>' + grpSoloText);
           }
           groupsDesc = groupStrs.join(' → ');
           if (tb.isTimeImproving) {
@@ -508,7 +519,7 @@ function renderStudentEmailHtml(studentInfo, anomalies, stats, appreciations, co
         html += '<td style="padding:9px 10px;border-bottom:1px solid #f1f5f9;font-weight:' + (isCurrent ? '800' : '600') + ';color:' + (isCurrent ? '#6d28d9' : '#0f172a') + '">' + tb.tier + (isCurrent ? ' ★' : '') + '</td>';
         html += '<td style="padding:9px 10px;text-align:center;border-bottom:1px solid #f1f5f9;color:#334155">' + tb.solves + '</td>';
         html += '<td style="padding:9px 10px;text-align:center;border-bottom:1px solid #f1f5f9;color:#334155;font-size:11px">' + soloHintStr + '</td>';
-        html += '<td style="padding:9px 10px;text-align:center;border-bottom:1px solid #f1f5f9;color:#334155">' + tb.avgTime + 'm</td>';
+        html += '<td style="padding:9px 10px;text-align:center;border-bottom:1px solid #f1f5f9;color:#334155">' + _roundUp2Helper(tb.avgTime) + 'm</td>';
         html += '<td style="padding:9px 10px;border-bottom:1px solid #f1f5f9;color:#475569;font-size:11px">' + groupsDesc + '</td>';
         html += '</tr>';
       }
@@ -536,7 +547,7 @@ function renderStudentEmailHtml(studentInfo, anomalies, stats, appreciations, co
         html += '<div style="font-size:13px;color:#881337;line-height:1.6">';
         for (var hi = 0; hi < coachingSummary.hintHeavyTags.length; hi++) {
           var ht = coachingSummary.hintHeavyTags[hi];
-          html += '<span style="display:inline-block;background:#ffffff;border:1px solid #fda4af;color:#be123c;padding:3px 10px;border-radius:9999px;font-size:11px;font-weight:700;margin:2px 4px 2px 0">' + escHtml(ht.tag) + ' (' + ht.hintRate + '% hints • ' + ht.hintCount + '/' + ht.solves + ')</span>';
+          html += '<span style="display:inline-block;background:#ffffff;border:1px solid #fda4af;color:#be123c;padding:3px 10px;border-radius:9999px;font-size:11px;font-weight:700;margin:2px 4px 2px 0">' + escHtml(ht.tag) + ' (' + _roundUp2Helper(ht.hintRate) + '% hints • ' + ht.hintCount + '/' + ht.solves + ')</span>';
         }
         html += '<div style="margin-top:6px;font-size:12px;color:#9f1239">💡 <em>Over 50% of your solves in these tags relied on hints. Re-attempt similar problems with zero hints to build true conceptual mastery.</em></div>';
         html += '</div></div>';
@@ -567,7 +578,7 @@ function renderStudentEmailHtml(studentInfo, anomalies, stats, appreciations, co
         html += '<div style="font-size:13px;color:#78350f;line-height:1.6">';
         for (var oi = 0; oi < coachingSummary.overFocusedTags.length; oi++) {
           var ot = coachingSummary.overFocusedTags[oi];
-          html += '<span style="display:inline-block;background:#ffffff;border:1px solid #fcd34d;color:#b45309;padding:3px 10px;border-radius:9999px;font-size:11px;font-weight:700;margin:2px 4px 2px 0">' + escHtml(ot.tag) + ' (' + ot.percent + '% of total solves)</span>';
+          html += '<span style="display:inline-block;background:#ffffff;border:1px solid #fcd34d;color:#b45309;padding:3px 10px;border-radius:9999px;font-size:11px;font-weight:700;margin:2px 4px 2px 0">' + escHtml(ot.tag) + ' (' + _roundUp2Helper(ot.percent) + '% of total solves)</span>';
         }
         html += '<div style="margin-top:6px;font-size:12px;color:#92400e">💡 <em>Over 40% volume concentrated here. Branch into diverse algorithmic paradigms.</em></div>';
         html += '</div></div>';
@@ -579,7 +590,7 @@ function renderStudentEmailHtml(studentInfo, anomalies, stats, appreciations, co
         html += '<div style="font-size:13px;color:#14532d;line-height:1.6">';
         for (var sti = 0; sti < Math.min(coachingSummary.strongTags.length, 3); sti++) {
           var stTag = coachingSummary.strongTags[sti];
-          html += '<span style="display:inline-block;background:#ffffff;border:1px solid #86efac;color:#15803d;padding:3px 10px;border-radius:9999px;font-size:11px;font-weight:700;margin:2px 4px 2px 0">' + escHtml(stTag.tag) + ' (' + stTag.solves + ' solves • avg ' + stTag.avgRating + ')</span>';
+          html += '<span style="display:inline-block;background:#ffffff;border:1px solid #86efac;color:#15803d;padding:3px 10px;border-radius:9999px;font-size:11px;font-weight:700;margin:2px 4px 2px 0">' + escHtml(stTag.tag) + ' (' + stTag.solves + ' solves • avg ' + _roundUp2Helper(stTag.avgRating) + ')</span>';
         }
         html += '</div></div>';
       }
@@ -690,10 +701,10 @@ function renderInstructorDigestEmailHtml(cohortAnomalies, cohortAppreciations, c
   var totalAnomalies = cohortAnomalies.reduce(function(s, c) { return s + c.anomalies.length; }, 0);
   var flaggedStudents = cohortAnomalies.length;
   var cleanStudents = totalStudents - flaggedStudents;
-  var cleanPercent = totalStudents > 0 ? Math.round((cleanStudents / totalStudents) * 100) : 100;
+  var cleanPercent = totalStudents > 0 ? _roundUp2Helper((cleanStudents / totalStudents) * 100) : 100;
 
   var totalSolves = (cohortAnalytics && cohortAnalytics.totalSolves) || allStats.reduce(function(sum, st) { return sum + st.totalSolves; }, 0);
-  var avgCohortRating = totalStudents > 0 ? Math.round(allStats.reduce(function(sum, st) { return sum + st.avgRating; }, 0) / totalStudents) : 0;
+  var avgCohortRating = totalStudents > 0 ? _roundUp2Helper(allStats.reduce(function(sum, st) { return sum + st.avgRating; }, 0) / totalStudents) : 0;
   var totalTime = allStats.reduce(function(sum, st) { return sum + (st.totalTime || 0); }, 0);
 
   var html = '<!DOCTYPE html><html><head><meta charset="utf-8">';
@@ -747,15 +758,16 @@ function renderInstructorDigestEmailHtml(cohortAnomalies, cohortAppreciations, c
 
   var cohortSoloCount = (cohortAnalytics && cohortAnalytics.totalSoloSolves) || 0;
   var cohortHintCount = (cohortAnalytics && cohortAnalytics.totalHintSolves) || 0;
-  var cohortHintPct = (cohortAnalytics && cohortAnalytics.cohortHintRate) || 0;
+  var cohortHintPct = (cohortAnalytics && cohortAnalytics.cohortHintRate) ? _roundUp2Helper(cohortAnalytics.cohortHintRate) : 0;
+  var cohortIndPct = _roundUp2Helper(100 - cohortHintPct);
 
   html += '<table cellpadding="0" cellspacing="0" border="0" width="100%"><tr><td style="padding:0 5px">';
   html += '<div style="background:#ffffff;border:1px solid #e0e7ff;border-radius:12px;padding:12px 14px;text-align:center;box-shadow:0 1px 3px rgba(0,0,0,.03)">';
   html += '<span style="font-size:13px;font-weight:800;color:#4338ca">⭐ Avg Rating: ' + avgCohortRating + '</span>';
   html += ' <span style="font-size:12px;color:#94a3b8;margin:0 6px">•</span> ';
-  html += '<span style="font-size:13px;font-weight:700;color:#2563eb">⏱️ Practice Time: ' + totalTime + 'm (' + Math.round(totalTime / 60) + 'h)</span>';
+  html += '<span style="font-size:13px;font-weight:700;color:#2563eb">⏱️ Practice Time: ' + totalTime + 'm (' + _roundUp2Helper(totalTime / 60) + 'h)</span>';
   html += ' <span style="font-size:12px;color:#94a3b8;margin:0 6px">•</span> ';
-  html += '<span style="font-size:13px;font-weight:700;color:#059669">🧩 Independence: ' + cohortSoloCount + ' Solo / ' + cohortHintCount + ' Hints (' + (100 - cohortHintPct) + '%)</span>';
+  html += '<span style="font-size:13px;font-weight:700;color:#059669">🧩 Independence: ' + cohortSoloCount + ' Solo / ' + cohortHintCount + ' Hints (' + cohortIndPct + '%)</span>';
   html += '</div></td></tr></table>';
 
   html += '</td></tr>';
@@ -860,7 +872,7 @@ function renderInstructorDigestEmailHtml(cohortAnomalies, cohortAppreciations, c
 
       var topicNotes = [];
       if (cData.hintHeavyTags && cData.hintHeavyTags.length > 0) {
-        var hintCrutchNames = cData.hintHeavyTags.map(function(h) { return h.tag + ' (' + h.hintRate + '% hints)'; }).join(', ');
+        var hintCrutchNames = cData.hintHeavyTags.map(function(h) { return h.tag + ' (' + _roundUp2Helper(h.hintRate) + '% hints)'; }).join(', ');
         topicNotes.push('<span style="color:#e11d48;font-weight:600">Hint Crutch:</span> ' + escHtml(hintCrutchNames));
       }
       if (cData.weakTags && cData.weakTags.length > 0) {
@@ -868,7 +880,7 @@ function renderInstructorDigestEmailHtml(cohortAnomalies, cohortAppreciations, c
         topicNotes.push('<span style="color:#b91c1c;font-weight:600">Needs:</span> ' + escHtml(weakNames));
       }
       if (cData.overFocusedTags && cData.overFocusedTags.length > 0) {
-        var overNames = cData.overFocusedTags.slice(0, 1).map(function(o) { return o.tag + ' (' + o.percent + '%)'; }).join(', ');
+        var overNames = cData.overFocusedTags.slice(0, 1).map(function(o) { return o.tag + ' (' + _roundUp2Helper(o.percent) + '%)'; }).join(', ');
         topicNotes.push('<span style="color:#d97706;font-weight:600">Over-focus:</span> ' + escHtml(overNames));
       }
       var topicNotesHtml = topicNotes.length > 0 ? topicNotes.join('<br>') : '<span style="color:#94a3b8">Balanced</span>';

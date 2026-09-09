@@ -14,6 +14,17 @@
    RATING PROGRESSION & WEAKNESS COACHING ENGINE
    ═══════════════════════════════════════════════════════════════════ */
 
+function _roundUp2Helper(val) {
+  if (typeof roundUp2 === 'function') return roundUp2(val);
+  if (val === null || val === undefined || val === '') return 0;
+  var n = Number(val);
+  if (isNaN(n)) return val;
+  if (Math.floor(n) === n) return n;
+  var factor = 100;
+  var rounded = Math.ceil(n * factor) / factor;
+  return Number(rounded.toFixed(2));
+}
+
 /**
  * Analyze student's rating progression across all historical solves.
  * Buckets solves by 100-point rating tiers, breaks each tier into groups of 10,
@@ -95,8 +106,8 @@ function analyzeRatingProgression(sheet, studentInfo, cfIndex, cohortSubmissions
       if (solves[ts].hasHint) tierHints++;
       else tierSolo++;
     }
-    var avgTime = solves.length > 0 ? Math.round(totalTime / solves.length) : 0;
-    var tierHintRate = solves.length > 0 ? Math.round((tierHints / solves.length) * 100) : 0;
+    var avgTime = solves.length > 0 ? _roundUp2Helper(totalTime / solves.length) : 0;
+    var tierHintRate = solves.length > 0 ? _roundUp2Helper((tierHints / solves.length) * 100) : 0;
 
     // Break into groups of 10 solves, sorted by date
     var groups = [];
@@ -108,8 +119,8 @@ function analyzeRatingProgression(sheet, studentInfo, cfIndex, cohortSubmissions
         if (group[gi].hasHint) groupHints++;
         else groupSolo++;
       }
-      var groupAvg = group.length > 0 ? Math.round(groupTime / group.length) : 0;
-      var groupHintRate = group.length > 0 ? Math.round((groupHints / group.length) * 100) : 0;
+      var groupAvg = group.length > 0 ? _roundUp2Helper(groupTime / group.length) : 0;
+      var groupHintRate = group.length > 0 ? _roundUp2Helper((groupHints / group.length) * 100) : 0;
       groups.push({
         groupIndex: Math.floor(g / 10) + 1,
         solveCount: group.length,
@@ -173,7 +184,7 @@ function analyzeRatingProgression(sheet, studentInfo, cfIndex, cohortSubmissions
     return Math.floor(s.rating / 100) * 100 === currentTier;
   });
   var recentHintsAtTier = recentCurrentTierSolves.filter(function(s) { return s.hasHint; }).length;
-  var recentTierHintRate = recentCurrentTierSolves.length > 0 ? Math.round((recentHintsAtTier / recentCurrentTierSolves.length) * 100) : (currentTierData ? currentTierData.hintRate : 0);
+  var recentTierHintRate = recentCurrentTierSolves.length > 0 ? _roundUp2Helper((recentHintsAtTier / recentCurrentTierSolves.length) * 100) : (currentTierData ? currentTierData.hintRate : 0);
 
   // Generate verdict with pedagogical gating on hint reliance
   if (!currentTierData || currentTierData.solves < 10) {
@@ -382,10 +393,10 @@ function analyzeTagWeaknesses(sheet, studentInfo, cfIndex, cohortSubmissionsMap,
   for (var at = 0; at < allTags.length; at++) {
     var tagName = allTags[at];
     var ts = tagStats[tagName];
-    var avgRating = ts.ratingCount > 0 ? Math.round(ts.ratingSum / ts.ratingCount) : 0;
-    var solvePercent = totalCFSolves > 0 ? Math.round((ts.solves / totalCFSolves) * 100) : 0;
+    var avgRating = ts.ratingCount > 0 ? _roundUp2Helper(ts.ratingSum / ts.ratingCount) : 0;
+    var solvePercent = totalCFSolves > 0 ? _roundUp2Helper((ts.solves / totalCFSolves) * 100) : 0;
     var hintCount = ts.hintCount || 0;
-    var tagHintRate = ts.solves > 0 && hintCount > 0 ? Math.round((hintCount / ts.solves) * 100) : 0;
+    var tagHintRate = ts.solves > 0 && hintCount > 0 ? _roundUp2Helper((hintCount / ts.solves) * 100) : 0;
 
     if (ts.solves >= 5 && avgRating >= 1000) {
       result.strongTags.push({ tag: tagName, solves: ts.solves, avgRating: avgRating, percent: solvePercent });

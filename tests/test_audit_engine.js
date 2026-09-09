@@ -339,6 +339,118 @@ test('verifyProblemServer accepts unlimited manual submissions with no daily lim
   assert.strictEqual(result.submissionCount, 2);
 });
 
+console.log('\n--- Group 7: Decimal Rounding Up (roundUp2) Checks ---');
+
+test('roundUp2 rounds UP to at most 2 digits after decimal point', () => {
+  assert.strictEqual(sandbox.roundUp2(85.71428571428571), 85.72, '85.71428571428571 should round up to 85.72');
+  assert.strictEqual(sandbox.roundUp2(33.333333333333336), 33.34, '33.333333333333336 should round up to 33.34');
+  assert.strictEqual(sandbox.roundUp2(2.5833333333333335), 2.59, '2.5833333333333335 should round up to 2.59');
+  assert.strictEqual(sandbox.roundUp2(100), 100, 'Integer 100 should remain 100');
+  assert.strictEqual(sandbox.roundUp2(0), 0, '0 should remain 0');
+  assert.strictEqual(sandbox.roundUp2(12.341), 12.35, '12.341 should round up to 12.35');
+  assert.strictEqual(sandbox.roundUp2(12.340), 12.34, '12.340 should remain 12.34');
+});
+
+test('renderStudentEmailHtml and renderInstructorDigestEmailHtml do not leak multi-digit floats', () => {
+  const studentInfo = { matricId: 'C261001', name: 'Alice' };
+  const stats = {
+    totalSolves: 7,
+    verifiedSolves: 6,
+    totalTime: 155, // 155 / 60 = 2.5833333333333335h
+    avgRating: 1214.2857142857142,
+    hintCount: 2,
+    soloSolves: 5,
+    hintRate: 28.571428571428573,
+    topTag: 'Greedy'
+  };
+
+  const emailHtml = sandbox.renderStudentEmailHtml(studentInfo, [], stats, [], [], '', new Date('2026-09-01'), new Date('2026-09-07'), null);
+  assert(!emailHtml.includes('28.571428571428573%'), 'Hint rate must not leak float decimals in student email');
+  assert(!emailHtml.includes('1214.2857142857142'), 'Avg rating must not leak float decimals in student email');
+  assert(emailHtml.includes('71.43% Unassisted'), 'Should display rounded up 71.43% unassisted rate');
+
+  const digestHtml = sandbox.renderInstructorDigestEmailHtml([], [], [], [stats], { totalSolves: 7, totalSoloSolves: 5, totalHintSolves: 2, cohortHintRate: 28.571428571428573 }, '', new Date('2026-09-01'), new Date('2026-09-07'), null, {});
+  assert(!digestHtml.includes('2.5833333333333335h'), 'Study hours must not leak float decimals in digest email');
+  assert(digestHtml.includes('2.59h'), 'Study hours should be formatted as 2.59h');
+});
+
+console.log('\n--- Group 8: Gym & Non-Contest CF Public API Skip Checks ---');
+
+test('parseProblemServerInput detects Gym contest IDs >= 100000 and gym URLs', () => {
+  const p1 = sandbox.parseProblemServerInput('https://codeforces.com/contest/102951/problem/A');
+  assert.strictEqual(p1.isGym, true, 'ContestId 102951 must be marked as isGym = true');
+  assert.strictEqual(p1.category, 'Gym', 'Category must be Gym');
+
+  const p2 = sandbox.parseProblemServerInput('https://codeforces.com/gym/100001/problem/B');
+  assert.strictEqual(p2.isGym, true, 'Gym URL must be marked as isGym = true');
+  assert.strictEqual(p2.category, 'Gym', 'Category must be Gym');
+
+  const p3 = sandbox.parseProblemServerInput('https://codeforces.com/group/abc123/contest/123/problem/A');
+  assert.strictEqual(p3.platform, 'codeforces_unsupported', 'Group URL must be marked as unsupported CF');
+
+  const p4 = sandbox.parseProblemServerInput('https://codeforces.com/edu/course/2/lesson/6/1/practice/contest/283911/problem/A');
+  assert.strictEqual(p4.platform, 'codeforces_unsupported', 'Edu URL must be marked as unsupported CF');
+
+  const p5 = sandbox.parseProblemServerInput('https://codeforces.com/problemset/problem/1800/A');
+  assert.strictEqual(p5.isGym, false, 'Standard problemset problem must not be gym');
+  assert.strictEqual(p5.platform, 'codeforces', 'Platform must be codeforces');
+});
+
+test('runStudentAudit skips CF API check for Gym problems and does NOT flag GHOST_AC', () => {
+  const studentInfo = { matricId: 'C261001', name: 'Alice', cfHandle: 'alice_cf' };
+  const weekStart = new Date('2026-09-01T00:00:00Z');
+  const weekEnd = new Date('2026-09-07T23:59:59Z');
+  const solveDate = new Date('2026-09-03T12:00:00Z');
+
+  const logRows = [
+    {
+      rowNum: 4,
+      link: 'https://codeforces.com/gym/102951/problem/A',
+      verdict: 'AC',
+      claimedSubs: 1,
+      time: 25,
+      date: solveDate,
+      category: 'Gym',
+      rating: 1400,
+      hasHint: false,
+      platform: 'codeforces',
+      contestId: 102951,
+      problemIndex: 'A',
+      isGym: true
+    },
+    {
+      rowNum: 5,
+      link: 'https://codeforces.com/contest/103000/problem/B',
+      verdict: 'AC',
+      claimedSubs: 1,
+      time: 30,
+      date: solveDate,
+      category: 'Gym',
+      rating: 1500,
+      hasHint: true,
+      platform: 'codeforces',
+      contestId: 103000,
+      problemIndex: 'B',
+      isGym: true
+    }
+  ];
+
+  // cfIndex has NO entries for gym problems because CF public API doesn't return gym submissions
+  const cfIndex = {
+    index: {},
+    handles: ['alice_cf'],
+    contestHandles: {}
+  };
+
+  const audit = sandbox.runStudentAudit(studentInfo, logRows, cfIndex, 1300, null, weekStart, weekEnd, { index: {}, handles: [] });
+
+  const ghostAnomalies = audit.anomalies.filter(a => a.type === 'GHOST_AC');
+  assert.strictEqual(ghostAnomalies.length, 0, 'Gym problems must NOT trigger GHOST_AC anomalies');
+  assert.strictEqual(audit.stats.totalSolves, 2, 'Gym solves must be counted in total solves');
+  assert.strictEqual(audit.stats.totalTime, 55, 'Gym solve time must be counted in total study time');
+  assert.strictEqual(audit.stats.manualSolves, 2, 'Gym solves must be recorded as manual solves');
+});
+
 console.log(`\n═══════════════════════════════════════════════`);
 console.log(`🏁 Test Results: ${passed} Passed, ${failed} Failed`);
 console.log(`═══════════════════════════════════════════════\n`);
