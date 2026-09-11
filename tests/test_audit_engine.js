@@ -368,6 +368,8 @@ test('renderStudentEmailHtml and renderInstructorDigestEmailHtml do not leak mul
   assert(!emailHtml.includes('28.571428571428573%'), 'Hint rate must not leak float decimals in student email');
   assert(!emailHtml.includes('1214.2857142857142'), 'Avg rating must not leak float decimals in student email');
   assert(emailHtml.includes('71.43% Unassisted'), 'Should display rounded up 71.43% unassisted rate');
+  assert(emailHtml.includes('Practice Time'), 'Student email should refer to Practice Time');
+  assert(!emailHtml.includes('Study Time'), 'Student email should not refer to Study Time');
 
   const digestHtml = sandbox.renderInstructorDigestEmailHtml([], [], [], [stats], { totalSolves: 7, totalSoloSolves: 5, totalHintSolves: 2, cohortHintRate: 28.571428571428573 }, '', new Date('2026-09-01'), new Date('2026-09-07'), null, {});
   assert(!digestHtml.includes('2.5833333333333335h'), 'Study hours must not leak float decimals in digest email');
@@ -449,6 +451,356 @@ test('runStudentAudit skips CF API check for Gym problems and does NOT flag GHOS
   assert.strictEqual(audit.stats.totalSolves, 2, 'Gym solves must be counted in total solves');
   assert.strictEqual(audit.stats.totalTime, 55, 'Gym solve time must be counted in total study time');
   assert.strictEqual(audit.stats.manualSolves, 2, 'Gym solves must be recorded as manual solves');
+});
+
+// ── Group 9: Core & Advanced Cheat-Proofing Checks ──
+console.log('\n--- Group 9: Core & Advanced Cheat-Proofing Checks ---');
+
+test('runStudentAudit flags IMPLAUSIBLE_SPEED when solves at/above baseline occur with too small gap', () => {
+  const studentInfo = { matricId: 'C261002', name: 'Bob', cfHandle: 'bob_cf' };
+  const weekStart = new Date('2026-09-01T00:00:00Z');
+  const weekEnd = new Date('2026-09-07T23:59:59Z');
+  const baseEpoch = Math.floor(new Date('2026-09-03T12:00:00Z').getTime() / 1000);
+
+  // Two 1400-rated problems solved 3 minutes apart across different contests
+  // Formula: max(3, floor((1400 - 500) / 100)) = 9 minutes minimum plausible
+  const logRows = [
+    {
+      rowNum: 4,
+      link: 'https://codeforces.com/contest/1800/problem/C',
+      verdict: 'AC',
+      claimedSubs: 1,
+      time: 20,
+      date: new Date(baseEpoch * 1000),
+      category: 'Codeforces',
+      rating: 1400,
+      hasHint: false,
+      platform: 'codeforces',
+      contestId: 1800,
+      problemIndex: 'C'
+    },
+    {
+      rowNum: 5,
+      link: 'https://codeforces.com/contest/1850/problem/D',
+      verdict: 'AC',
+      claimedSubs: 1,
+      time: 20,
+      date: new Date((baseEpoch + 180) * 1000),
+      category: 'Codeforces',
+      rating: 1400,
+      hasHint: false,
+      platform: 'codeforces',
+      contestId: 1850,
+      problemIndex: 'D'
+    }
+  ];
+
+  const cfIndex = {
+    index: {
+      '1800C': { bestVerdict: 'OK', acTime: baseEpoch, attempts: 1, handles: { bob_cf: true }, ratings: [1400], subs: [{ t: baseEpoch, v: 'OK', id: 101 }] },
+      '1850D': { bestVerdict: 'OK', acTime: baseEpoch + 180, attempts: 1, handles: { bob_cf: true }, ratings: [1400], subs: [{ t: baseEpoch + 180, v: 'OK', id: 102 }] }
+    },
+    handles: ['bob_cf'],
+    contestHandles: {}
+  };
+
+  const audit = sandbox.runStudentAudit(studentInfo, logRows, cfIndex, 1200, null, weekStart, weekEnd);
+  const speedAnoms = audit.anomalies.filter(a => a.type === 'IMPLAUSIBLE_SPEED');
+  assert.strictEqual(speedAnoms.length, 1, 'Should flag IMPLAUSIBLE_SPEED for 3-minute gap on 1400 problems');
+});
+
+test('runStudentAudit does NOT flag IMPLAUSIBLE_SPEED for same-contest solves or problems below baseline', () => {
+  const studentInfo = { matricId: 'C261003', name: 'Charlie', cfHandle: 'charlie_cf' };
+  const weekStart = new Date('2026-09-01T00:00:00Z');
+  const weekEnd = new Date('2026-09-07T23:59:59Z');
+  const baseEpoch = Math.floor(new Date('2026-09-03T12:00:00Z').getTime() / 1000);
+
+  // Same contest (e.g. contest 1900): live contest participation exempt
+  const logRows = [
+    {
+      rowNum: 4,
+      link: 'https://codeforces.com/contest/1900/problem/A',
+      verdict: 'AC',
+      claimedSubs: 1,
+      time: 5,
+      date: new Date(baseEpoch * 1000),
+      category: 'Codeforces',
+      rating: 1400,
+      hasHint: false,
+      platform: 'codeforces',
+      contestId: 1900,
+      problemIndex: 'A'
+    },
+    {
+      rowNum: 5,
+      link: 'https://codeforces.com/contest/1900/problem/B',
+      verdict: 'AC',
+      claimedSubs: 1,
+      time: 5,
+      date: new Date((baseEpoch + 120) * 1000),
+      category: 'Codeforces',
+      rating: 1400,
+      hasHint: false,
+      platform: 'codeforces',
+      contestId: 1900,
+      problemIndex: 'B'
+    }
+  ];
+
+  const cfIndex = {
+    index: {
+      '1900A': { bestVerdict: 'OK', acTime: baseEpoch, attempts: 1, handles: { charlie_cf: true }, ratings: [1400], subs: [{ t: baseEpoch, v: 'OK', id: 201 }] },
+      '1900B': { bestVerdict: 'OK', acTime: baseEpoch + 120, attempts: 1, handles: { charlie_cf: true }, ratings: [1400], subs: [{ t: baseEpoch + 120, v: 'OK', id: 202 }] }
+    },
+    handles: ['charlie_cf'],
+    contestHandles: {}
+  };
+
+  const audit = sandbox.runStudentAudit(studentInfo, logRows, cfIndex, 1200, null, weekStart, weekEnd);
+  const speedAnoms = audit.anomalies.filter(a => a.type === 'IMPLAUSIBLE_SPEED');
+  assert.strictEqual(speedAnoms.length, 0, 'Same contest solves must NOT trigger IMPLAUSIBLE_SPEED');
+});
+
+test('runStudentAudit flags TIME_MISSING, TIME_IMPLAUSIBLE, and FUTURE_TIMESTAMP', () => {
+  const studentInfo = { matricId: 'C261004', name: 'Dave', cfHandle: 'dave_cf' };
+  const weekStart = new Date('2026-09-01T00:00:00Z');
+  const weekEnd = new Date('2026-09-07T23:59:59Z');
+
+  const logRows = [
+    {
+      rowNum: 4,
+      link: 'https://codeforces.com/problemset/problem/1000/A',
+      verdict: 'AC',
+      time: 0, // Missing time
+      date: new Date('2026-09-03T12:00:00Z'),
+      category: 'Codeforces',
+      rating: 1000,
+      platform: 'codeforces',
+      contestId: 1000,
+      problemIndex: 'A'
+    },
+    {
+      rowNum: 5,
+      link: 'https://codeforces.com/problemset/problem/1000/B',
+      verdict: 'AC',
+      time: 600, // Implausible 10 hours
+      date: new Date('2026-09-04T12:00:00Z'),
+      category: 'Codeforces',
+      rating: 1000,
+      platform: 'codeforces',
+      contestId: 1000,
+      problemIndex: 'B'
+    },
+    {
+      rowNum: 6,
+      link: 'https://codeforces.com/problemset/problem/1000/C',
+      verdict: 'AC',
+      time: 20,
+      date: new Date('2026-09-10T12:00:00Z'), // Future date after weekEnd
+      category: 'Codeforces',
+      rating: 1000,
+      platform: 'codeforces',
+      contestId: 1000,
+      problemIndex: 'C'
+    }
+  ];
+
+  const cfIndex = {
+    index: {
+      '1000A': { bestVerdict: 'OK', acTime: Math.floor(new Date('2026-09-03T12:00:00Z').getTime() / 1000), attempts: 1, handles: { dave_cf: true }, ratings: [1000], subs: [] },
+      '1000B': { bestVerdict: 'OK', acTime: Math.floor(new Date('2026-09-04T12:00:00Z').getTime() / 1000), attempts: 1, handles: { dave_cf: true }, ratings: [1000], subs: [] },
+      '1000C': { bestVerdict: 'OK', acTime: Math.floor(new Date('2026-09-05T12:00:00Z').getTime() / 1000), attempts: 1, handles: { dave_cf: true }, ratings: [1000], subs: [] }
+    },
+    handles: ['dave_cf'],
+    contestHandles: {}
+  };
+
+  const audit = sandbox.runStudentAudit(studentInfo, logRows, cfIndex, 1000, null, weekStart, weekEnd);
+  assert.ok(audit.anomalies.some(a => a.type === 'TIME_MISSING'), 'Should flag TIME_MISSING when time is 0');
+  assert.ok(audit.anomalies.some(a => a.type === 'TIME_IMPLAUSIBLE'), 'Should flag TIME_IMPLAUSIBLE when time > 480');
+  assert.ok(audit.anomalies.some(a => a.type === 'FUTURE_TIMESTAMP'), 'Should flag FUTURE_TIMESTAMP when date > weekEnd');
+});
+
+test('runStudentAudit flags TIME_INFLATION when claimed time greatly exceeds OJ submission-to-AC duration', () => {
+  const studentInfo = { matricId: 'C261005', name: 'Eve', cfHandle: 'eve_cf' };
+  const weekStart = new Date('2026-09-01T00:00:00Z');
+  const weekEnd = new Date('2026-09-07T23:59:59Z');
+  const firstSubTime = 1756800000;
+  const acSubTime = firstSubTime + 300; // 5 min duration between first sub and AC
+
+  const logRows = [
+    {
+      rowNum: 4,
+      link: 'https://codeforces.com/contest/1800/problem/A',
+      verdict: 'AC',
+      claimedSubs: 2,
+      time: 90, // Claims 90 min on problem solved in 5 min on OJ
+      date: new Date(acSubTime * 1000),
+      category: 'Codeforces',
+      rating: 1000,
+      platform: 'codeforces',
+      contestId: 1800,
+      problemIndex: 'A'
+    }
+  ];
+
+  const cfIndex = {
+    index: {
+      '1800A': {
+        bestVerdict: 'OK',
+        acTime: acSubTime,
+        attempts: 2,
+        handles: { eve_cf: true },
+        ratings: [1000],
+        subs: [
+          { t: firstSubTime, v: 'WA', id: 301 },
+          { t: acSubTime, v: 'OK', id: 302 }
+        ]
+      }
+    },
+    handles: ['eve_cf'],
+    contestHandles: {}
+  };
+
+  const audit = sandbox.runStudentAudit(studentInfo, logRows, cfIndex, 1000, null, weekStart, weekEnd);
+  const inflationAnoms = audit.anomalies.filter(a => a.type === 'TIME_INFLATION');
+  assert.strictEqual(inflationAnoms.length, 1, 'Should flag TIME_INFLATION for 90m claim on 5m OJ duration');
+});
+
+test('runStudentAudit flags SUSTAINED_SPIKE when 3+ problems are 300+ above baseline', () => {
+  const studentInfo = { matricId: 'C261006', name: 'Frank', cfHandle: 'frank_cf' };
+  const weekStart = new Date('2026-09-01T00:00:00Z');
+  const weekEnd = new Date('2026-09-07T23:59:59Z');
+
+  // Baseline is 1000, student solves 3 problems at 1350 (+350, below 500 single spike)
+  const logRows = [
+    { rowNum: 4, verdict: 'AC', time: 30, rating: 1350, platform: 'manual', category: 'Other OJ', date: new Date('2026-09-02') },
+    { rowNum: 5, verdict: 'AC', time: 30, rating: 1350, platform: 'manual', category: 'Other OJ', date: new Date('2026-09-03') },
+    { rowNum: 6, verdict: 'AC', time: 30, rating: 1350, platform: 'manual', category: 'Other OJ', date: new Date('2026-09-04') }
+  ];
+
+  const audit = sandbox.runStudentAudit(studentInfo, logRows, { index: {}, handles: [] }, 1000, null, weekStart, weekEnd);
+  const sustainedAnoms = audit.anomalies.filter(a => a.type === 'SUSTAINED_SPIKE');
+  assert.strictEqual(sustainedAnoms.length, 1, 'Should flag SUSTAINED_SPIKE when 3+ solves are at +350 rating');
+});
+
+test('runStudentAudit auto-escalates SUSPICIOUS anomalies to FLAGGED for repeat offenders', () => {
+  const studentInfo = { matricId: 'C261007', name: 'Grace', cfHandle: 'grace_cf' };
+  const weekStart = new Date('2026-09-01T00:00:00Z');
+  const weekEnd = new Date('2026-09-07T23:59:59Z');
+
+  // Claimed solve with time anomaly (normally SUSPICIOUS)
+  const logRows = [
+    {
+      rowNum: 4,
+      verdict: 'AC',
+      time: 2, // Claimed in 2 min (below 5 min threshold)
+      rating: 1400, // Above personalTimeThreshold (1000 + 200 = 1200)
+      platform: 'manual',
+      category: 'Other OJ',
+      date: new Date('2026-09-03')
+    }
+  ];
+
+  const studentHistory = {
+    flaggedWeeks: 2, // Repeat offender: 2 of last 4 weeks had FLAGGED anomalies
+    cleanStreak: 0,
+    previousWeekStats: { totalTime: 60, totalSolves: 2, avgRating: 1000 }
+  };
+
+  const audit = sandbox.runStudentAudit(studentInfo, logRows, { index: {}, handles: [] }, 1000, studentHistory.previousWeekStats, weekStart, weekEnd, null, null, studentHistory);
+  const timeAnom = audit.anomalies.find(a => a.type === 'TIME_ANOMALY');
+  assert.ok(timeAnom, 'TIME_ANOMALY should be flagged');
+  assert.strictEqual(timeAnom.severity, 'FLAGGED', 'TIME_ANOMALY should be auto-escalated to FLAGGED for repeat offender');
+  assert.ok(audit.concerns.some(c => c.indexOf('Verification discrepancies detected in 2') !== -1), 'Repeat offender concern must be added');
+});
+
+// ── Group 10: LeetCode Verification & Progression Recommendations ──
+console.log('\n--- Group 10: LeetCode Verification & Progression Recommendations ---');
+
+test('runStudentAudit verifies LeetCode problems against lcIndex and flags GHOST_AC when missing', () => {
+  const studentInfo = { matricId: 'C261008', name: 'Heidi', leetCodeHandle: 'heidi_lc' };
+  const weekStart = new Date('2026-09-01T00:00:00Z');
+  const weekEnd = new Date('2026-09-07T23:59:59Z');
+
+  const logRows = [
+    {
+      rowNum: 4,
+      link: 'https://leetcode.com/problems/two-sum/',
+      titleSlug: 'two-sum',
+      verdict: 'AC',
+      time: 20,
+      date: new Date('2026-09-03T12:00:00Z'),
+      category: 'LeetCode',
+      rating: 800,
+      platform: 'leetcode'
+    },
+    {
+      rowNum: 5,
+      link: 'https://leetcode.com/problems/trapping-rain-water/',
+      titleSlug: 'trapping-rain-water',
+      verdict: 'AC',
+      time: 40,
+      date: new Date('2026-09-04T12:00:00Z'),
+      category: 'LeetCode',
+      rating: 1600,
+      platform: 'leetcode'
+    }
+  ];
+
+  // lcIndex only has two-sum, trapping-rain-water is missing
+  const lcIndex = {
+    'two-sum': { v: 'AC', s: 1, t: Math.floor(new Date('2026-09-03T12:00:00Z').getTime() / 1000) }
+  };
+
+  const audit = sandbox.runStudentAudit(studentInfo, logRows, { index: {}, handles: [] }, 1000, null, weekStart, weekEnd, null, lcIndex);
+
+  assert.strictEqual(audit.stats.verifiedSolves, 1, 'two-sum must be verified');
+  const ghostAnoms = audit.anomalies.filter(a => a.type === 'GHOST_AC');
+  assert.strictEqual(ghostAnoms.length, 1, 'trapping-rain-water must trigger GHOST_AC');
+  assert.ok(ghostAnoms[0].detail.indexOf('trapping-rain-water') !== -1, 'GHOST_AC detail must mention problem slug');
+});
+
+test('loadStudentAuditHistory collects multi-week history and computes cleanStreak correctly', () => {
+  const mockSheet = {
+    getDataRange: function() {
+      return {
+        getValues: function() {
+          return [
+            ['Timestamp', 'WeekStart', 'WeekEnd', 'MatricId', 'Name', 'RowNum', 'Type', 'Severity', 'Problem', 'Detail', 'Rating', 'Time', 'TotalTime', 'TotalSolves', 'AvgRating'],
+            // Week 1 (most recent, clean)
+            ['9/7/2026', '9/1/2026', '9/7/2026', 'C261010', 'Ivan', '', 'WEEK_SUMMARY', '', '', '', '', '', 120, 5, 1200],
+            // Week 2 (clean)
+            ['8/31/2026', '8/25/2026', '8/31/2026', 'C261010', 'Ivan', '', 'WEEK_SUMMARY', '', '', '', '', '', 100, 4, 1150],
+            // Week 3 (clean)
+            ['8/24/2026', '8/18/2026', '8/24/2026', 'C261010', 'Ivan', '', 'WEEK_SUMMARY', '', '', '', '', '', 150, 6, 1100],
+            // Week 4 (flagged anomaly)
+            ['8/17/2026', '8/11/2026', '8/17/2026', 'C261010', 'Ivan', '', 'WEEK_SUMMARY', '', '', '', '', '', 80, 3, 1050],
+            ['8/17/2026', '8/11/2026', '8/17/2026', 'C261010', 'Ivan', '4', 'GHOST_AC', 'FLAGGED', 'CF 1234A', 'No sub', 1000, 20, '', '', '']
+          ];
+        }
+      };
+    }
+  };
+
+  const mockSs = {
+    getSheetByName: function(name) {
+      return name === 'AuditLog' ? mockSheet : null;
+    }
+  };
+
+  const history = sandbox.loadStudentAuditHistory(mockSs, 4);
+  const ivan = history['C261010'];
+  assert.ok(ivan, 'Student C261010 must be in history map');
+  assert.strictEqual(ivan.weeks.length, 4, 'Must have 4 weeks');
+  assert.strictEqual(ivan.flaggedWeeks, 1, 'Week 4 was flagged, so flaggedWeeks must be 1');
+  assert.strictEqual(ivan.cleanStreak, 3, 'Weeks 1, 2, 3 were clean, so cleanStreak must be 3');
+  assert.strictEqual(ivan.previousWeekStats.totalSolves, 5, 'Previous week solves must be 5');
+});
+
+test('SuggestionEngine generates actionable Codeforces problemset links', () => {
+  const link = sandbox.buildCFProblemsetLink('graphs', 1200);
+  assert.strictEqual(link, 'https://codeforces.com/problemset?tags=graphs&order=BY_RATING_ASC&minDifficulty=1200&maxDifficulty=1400');
 });
 
 console.log(`\n═══════════════════════════════════════════════`);

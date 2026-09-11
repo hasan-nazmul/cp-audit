@@ -17,16 +17,6 @@
 
 /* ─── CONFIGURATION ────────────────────────────────────────────── */
 
-function _roundUp2Helper(val) {
-  if (typeof roundUp2 === 'function') return roundUp2(val);
-  if (val === null || val === undefined || val === '') return 0;
-  var n = Number(val);
-  if (isNaN(n)) return val;
-  if (Math.floor(n) === n) return n;
-  var factor = 100;
-  var rounded = Math.ceil(n * factor) / factor;
-  return Number(rounded.toFixed(2));
-}
 
 var SUGGESTION_CONFIG = {
   // Solves in a "must" topic before considered competent at current tier
@@ -987,6 +977,13 @@ function generateSuggestionReport(matricId, optCohortSubmissionsMap) {
  * @param {Object} [optReport] - Optional pre-generated report object.
  * @returns {string} HTML string.
  */
+function buildCFProblemsetLink(topic, tier) {
+  var minDiff = Math.max(800, Number(tier) || 1000);
+  var maxDiff = minDiff + 200;
+  var tag = encodeURIComponent(String(topic || '').toLowerCase().trim());
+  return 'https://codeforces.com/problemset?tags=' + tag + '&order=BY_RATING_ASC&minDifficulty=' + minDiff + '&maxDifficulty=' + maxDiff;
+}
+
 function getSuggestionHtmlForStudent(matricId, optReport) {
   var report = optReport || generateSuggestionReport(matricId);
   if (report.error) {
@@ -1013,11 +1010,13 @@ function getSuggestionHtmlForStudent(matricId, optReport) {
     html += '<ul style="margin:0;padding-left:18px;font-size:13px;color:#881337;line-height:1.6;">';
     for (var ug = 0; ug < report.urgentGaps.length; ug++) {
       var g = report.urgentGaps[ug];
-      html += '<li style="margin-bottom:6px;">';
+      var cfLink = buildCFProblemsetLink(g.topic, report.currentTier);
+      html += '<li style="margin-bottom:8px;">';
       html += '<strong>' + esc(g.topic) + '</strong> (' + g.solved + '/' + g.needed + ' target solves) — ' + esc(g.reason);
       if (g.examples) {
         html += '<br><span style="font-size:11px;color:#be123c;">\u{1F4D6} Archetypes: ' + esc(g.examples) + '</span>';
       }
+      html += '<br><a href="' + cfLink + '" target="_blank" style="display:inline-block;margin-top:5px;padding:3px 10px;background:#be123c;color:#ffffff;border-radius:4px;font-size:11px;font-weight:700;text-decoration:none;">Practice This Topic →</a>';
       html += '</li>';
     }
     html += '</ul></div>';
@@ -1030,11 +1029,13 @@ function getSuggestionHtmlForStudent(matricId, optReport) {
     html += '<ul style="margin:0;padding-left:18px;font-size:13px;color:#78350f;line-height:1.6;">';
     for (var cn = 0; cn < report.consolidationNeeds.length; cn++) {
       var c = report.consolidationNeeds[cn];
-      html += '<li style="margin-bottom:6px;">';
+      var cfLink2 = buildCFProblemsetLink(c.topic, c.tier || (report.currentTier - 100));
+      html += '<li style="margin-bottom:8px;">';
       html += '<strong>' + esc(c.topic) + '</strong> (only ' + c.solved + ' solves from Tier ' + c.tier + ') — ' + esc(c.reason);
       if (c.examples) {
         html += '<br><span style="font-size:11px;color:#b45309;">\u{1F4A1} Key concepts: ' + esc(c.examples) + '</span>';
       }
+      html += '<br><a href="' + cfLink2 + '" target="_blank" style="display:inline-block;margin-top:5px;padding:3px 10px;background:#b45309;color:#ffffff;border-radius:4px;font-size:11px;font-weight:700;text-decoration:none;">Practice This Topic →</a>';
       html += '</li>';
     }
     html += '</ul></div>';

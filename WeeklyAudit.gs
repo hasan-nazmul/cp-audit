@@ -44,6 +44,7 @@ var AUDIT_PERSONAL_DELTA_TIME = getAuditConfigNum('AUDIT_PERSONAL_DELTA_TIME', 2
 var AUDIT_WEEK_DAYS = getAuditConfigNum('AUDIT_WEEK_DAYS', 7);
 var AUDIT_PARALLEL_BATCH_SIZE = getAuditConfigNum('AUDIT_PARALLEL_BATCH_SIZE', 5);
 var AUDIT_THROTTLE_MS = getAuditConfigNum('AUDIT_THROTTLE_MS', 250);
+var AUDIT_SPEED_PLAUSIBILITY_ENABLED = getAuditConfigNum('AUDIT_SPEED_PLAUSIBILITY_ENABLED', 1);
 
 /* ═══════════════════════════════════════════════════════════════════
    MAIN AUDIT WORKFLOW
@@ -79,9 +80,15 @@ function weeklyAuditAndHistory() {
   _geminiCircuitOpen = false;
 
   // ── Step 1: Single-Pass Cohort Roster & Stats Loading ──
-  var stepStart = Date.now();
+  stepStart = Date.now();
   var rosterData = loadCohortRoster(ss);
-  var prevStatsMap = loadPreviousWeekStatsMap(ss);
+  var auditHistoryMap = loadStudentAuditHistory(ss, 4);
+  var prevStatsMap = {};
+  for (var hMid in auditHistoryMap) {
+    if (auditHistoryMap[hMid] && auditHistoryMap[hMid].previousWeekStats) {
+      prevStatsMap[hMid] = auditHistoryMap[hMid].previousWeekStats;
+    }
+  }
   var studentSheets = getActiveStudentSheets(ss, rosterData);
   Logger.log('⏱ Step 1 (Roster & Stats) completed in ' + (Date.now() - stepStart) + 'ms — ' + studentSheets.length + ' active students');
 
@@ -90,10 +97,11 @@ function weeklyAuditAndHistory() {
     return;
   }
 
-  // ── Step 2: Extract & Batch Pre-Validate All Cohort CF Handles + AtCoder Handles ──
+  // ── Step 2: Extract & Batch Pre-Validate All Cohort CF Handles + AtCoder Handles + LeetCode Handles ──
   stepStart = Date.now();
   var validatedHandlesMap = {};
   var allCohortAtCoderHandles = [];
+  var allCohortLeetCodeHandles = [];
   try {
     var allCohortCFHandles = [];
     for (var s = 0; s < studentSheets.length; s++) {
@@ -107,18 +115,24 @@ function weeklyAuditAndHistory() {
       for (var ah = 0; ah < acHandles.length; ah++) {
         allCohortAtCoderHandles.push(acHandles[ah]);
       }
+      // Collect LeetCode handles
+      var lcHandles = sanitizeHandles(sInfo.leetCodeHandle, 'leetcode');
+      for (var lh = 0; lh < lcHandles.length; lh++) {
+        allCohortLeetCodeHandles.push(lcHandles[lh]);
+      }
     }
     validatedHandlesMap = validateCFHandlesBatch(allCohortCFHandles) || {};
   } catch (handleErr) {
     Logger.log('⚠️ Could not pre-validate CF handles (network or API issue): ' + handleErr.message);
     validatedHandlesMap = {};
   }
-  Logger.log('⏱ Step 2 (Handle Validation) completed in ' + (Date.now() - stepStart) + 'ms — ' + Object.keys(validatedHandlesMap).length + ' CF handles, ' + allCohortAtCoderHandles.length + ' AtCoder handles');
+  Logger.log('⏱ Step 2 (Handle Validation) completed in ' + (Date.now() - stepStart) + 'ms — ' + Object.keys(validatedHandlesMap).length + ' CF handles, ' + allCohortAtCoderHandles.length + ' AtCoder handles, ' + allCohortLeetCodeHandles.length + ' LeetCode handles');
 
-  // ── Step 3: Asynchronous Parallel Fetching for All Verified Handles (CF + AtCoder) ──
+  // ── Step 3: Asynchronous Parallel Fetching for All Verified Handles (CF + AtCoder + LeetCode) ──
   stepStart = Date.now();
   var cohortSubmissionsMap = {};
   var cohortAtCoderMap = {};
+  var cohortLeetCodeMap = {};
   try {
     var verifiedHandlesToFetch = Object.keys(validatedHandlesMap).filter(function(handle) {
       return validatedHandlesMap[handle] === true;
@@ -138,7 +152,17 @@ function weeklyAuditAndHistory() {
     Logger.log('⚠️ Could not fetch AtCoder cohort submissions: ' + acFetchErr.message);
     cohortAtCoderMap = {};
   }
-  Logger.log('⏱ Step 3 (Parallel Fetch) completed in ' + (Date.now() - stepStart) + 'ms — ' + Object.keys(cohortSubmissionsMap).length + ' CF handles, ' + Object.keys(cohortAtCoderMap).length + ' AtCoder handles fetched');
+
+  // Fetch LeetCode submissions for all handles
+  try {
+    if (allCohortLeetCodeHandles.length > 0) {
+      cohortLeetCodeMap = fetchCohortLeetCodeSubmissions(allCohortLeetCodeHandles) || {};
+    }
+  } catch (lcFetchErr) {
+    Logger.log('⚠️ Could not fetch LeetCode cohort submissions: ' + lcFetchErr.message);
+    cohortLeetCodeMap = {};
+  }
+  Logger.log('⏱ Step 3 (Parallel Fetch) completed in ' + (Date.now() - stepStart) + 'ms — ' + Object.keys(cohortSubmissionsMap).length + ' CF handles, ' + Object.keys(cohortAtCoderMap).length + ' AtCoder handles, ' + Object.keys(cohortLeetCodeMap).length + ' LeetCode handles fetched');
 
   // ── Step 4: Audit Each Student (Isolated Per Student) ──
   stepStart = Date.now();
@@ -166,6 +190,10 @@ function weeklyAuditAndHistory() {
       var studentACHandles = sanitizeHandles(studentInfo.atCoderHandle, 'atcoder');
       var acIndex = buildAtCoderSubmissionIndex(studentACHandles, cohortAtCoderMap);
 
+      // Build LeetCode submission index for student
+      var studentLCHandles = sanitizeHandles(studentInfo.leetCodeHandle, 'leetcode');
+      var lcIndex = (studentLCHandles.length > 0) ? buildLeetCodeSubmissionIndex(studentLCHandles, cohortLeetCodeMap) : null;
+
       // Single-pass sheet read: read columns 6 to 15 once to avoid redundant RPCs
       var lastRow = sheet.getLastRow();
       var hasHintCol = hasHintColumn(sheet);
@@ -174,14 +202,15 @@ function weeklyAuditAndHistory() {
       // Read student log rows for the week using preloaded data
       var logRows = readStudentWeekLog(sheet, weekStart, weekEnd, preloadedData, hasHintCol);
 
-      // Fetch previous week stats from memory map
-      var prevWeekStats = prevStatsMap[studentInfo.matricId] || null;
+      // Fetch previous week stats and audit history from memory map
+      var studentHistory = auditHistoryMap[studentInfo.matricId] || null;
+      var prevWeekStats = studentHistory ? studentHistory.previousWeekStats : null;
 
       // Compute rolling 4-week average rating using preloaded data
       var rollingAvgRating = computeStudentRollingAvgRating(sheet, preloadedData);
 
-      // Run authoritative audit (now includes AtCoder index)
-      var audit = runStudentAudit(studentInfo, logRows, cfIndex, rollingAvgRating, prevWeekStats, weekStart, weekEnd, acIndex);
+      // Run authoritative audit (now includes AtCoder & LeetCode indices + multi-week history)
+      var audit = runStudentAudit(studentInfo, logRows, cfIndex, rollingAvgRating, prevWeekStats, weekStart, weekEnd, acIndex, lcIndex, studentHistory);
 
       allStudentStats.push(audit.stats);
       if (audit.anomalies.length > 0) {
@@ -202,6 +231,7 @@ function weeklyAuditAndHistory() {
         sheet: sheet,
         cfIndex: cfIndex,
         acIndex: acIndex,
+        lcIndex: lcIndex,
         preloadedData: preloadedData,
         hasHintCol: hasHintCol
       });
@@ -337,8 +367,8 @@ function weeklyAuditAndHistory() {
 
     // Selective Trigger: Send if has anomaly alert, appreciation for betterment, concern, progression milestone update, or falling apart
     var stCoach = cohortCoachingSummaries[mid] || null;
-    var hasProgressionUpdate = stCoach && (stCoach.progressionVerdict === 'READY_TO_ADVANCE' || stCoach.progressionVerdict === 'HINT_DEPENDENT');
-    var isFallingApart = (studentStatsObj && studentStatsObj.totalSolves === 0) || studentConcerns.length >= 2;
+    var stSolves = studentStatsObj ? studentStatsObj.totalSolves : 0;
+    var isFallingApart = (stSolves === 0) || (stSolves <= 2 && studentConcerns.length >= 2);
     var hasTrigger = studentAnomalies.length > 0 || studentAppreciations.length > 0 || studentConcerns.length > 0 || isFallingApart || hasProgressionUpdate;
 
     var studentEmails = sanitizeEmailList(currentStudent.email || currentStudent.rawEmail);

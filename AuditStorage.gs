@@ -71,28 +71,176 @@ function loadCohortRoster(ss) {
 }
 
 /**
- * Load previous week stats for all students in a single scan.
+ * Load multi-week audit history for all students in a single scan.
+ * Collects up to weekCount past weeks of WEEK_SUMMARY data and anomaly stats.
+ *
+ * @param {Spreadsheet} ss - Active spreadsheet.
+ * @param {number} [weekCount=4] - Number of past audit weeks to collect.
+ * @returns {Object<string, {
+ *   previousWeekStats: { totalTime: number, totalSolves: number, avgRating: number } | null,
+ *   weeks: Array<{
+ *     weekStart: string,
+ *     weekEnd: string,
+ *     totalTime: number,
+ *     totalSolves: number,
+ *     avgRating: number,
+ *     flaggedCount: number,
+ *     suspiciousCount: number,
+ *     hasFlagged: boolean,
+ *     hasSuspicious: boolean,
+ *     isClean: boolean
+ *   }>,
+ *   flaggedWeeks: number,
+ *   cleanStreak: number
+ * }>}
  */
-function loadPreviousWeekStatsMap(ss) {
+function loadStudentAuditHistory(ss, weekCount) {
+  var limit = (typeof weekCount === 'number' && weekCount > 0) ? weekCount : 4;
   var map = {};
   var auditLog = ss.getSheetByName('AuditLog');
   if (!auditLog) return map;
 
   var data = auditLog.getDataRange().getValues();
-  for (var i = data.length - 1; i >= 1; i--) {
-    var rawMatricId = String(data[i][3] || '').trim();
-    var rowMatricId = extractMatricId(rawMatricId);
-    var rowType = String(data[i][6] || '').trim();
+  if (data.length <= 1) return map;
 
-    if (rowMatricId && rowType === 'WEEK_SUMMARY' && !map[rowMatricId]) {
-      map[rowMatricId] = {
-        totalTime: toNum(data[i][12]),
-        totalSolves: toNum(data[i][13]),
-        avgRating: toNum(data[i][14])
-      };
+  // Determine chronological scan direction: newest rows to oldest rows
+  var startIdx = 1;
+  var endIdx = data.length - 1;
+  var step = 1;
+
+  if (data.length > 2) {
+    var tFirst = parseDate(data[1][0]) || parseDate(data[1][2]);
+    var tLast = parseDate(data[data.length - 1][0]) || parseDate(data[data.length - 1][2]);
+    if (tFirst && tLast && tLast.getTime() > tFirst.getTime()) {
+      // Bottom rows are newer (append pattern) -> scan backwards from bottom to top
+      startIdx = data.length - 1;
+      endIdx = 1;
+      step = -1;
     }
   }
 
+  var studentWeeks = {};
+  var studentWeekIndex = {};
+
+  for (var i = startIdx; (step > 0 ? i <= endIdx : i >= endIdx); i += step) {
+    var rawMatricId = String(data[i][3] || '').trim();
+    var matricId = extractMatricId(rawMatricId);
+    if (!matricId) continue;
+
+    var weekStartStr = formatDate(data[i][1]);
+    var weekEndStr = formatDate(data[i][2]);
+    var weekKey = weekStartStr + '_' + weekEndStr;
+    var rowType = String(data[i][6] || '').trim();
+    var severity = String(data[i][7] || '').toUpperCase().trim();
+
+    if (!studentWeeks[matricId]) {
+      studentWeeks[matricId] = [];
+      studentWeekIndex[matricId] = {};
+    }
+
+    var wEntry = studentWeekIndex[matricId][weekKey];
+    if (!wEntry) {
+      if (studentWeeks[matricId].length >= limit) {
+        continue;
+      }
+      wEntry = {
+        weekStart: weekStartStr,
+        weekEnd: weekEndStr,
+        totalTime: 0,
+        totalSolves: 0,
+        avgRating: 0,
+        flaggedCount: 0,
+        suspiciousCount: 0,
+        hasSummary: false
+      };
+      studentWeekIndex[matricId][weekKey] = wEntry;
+      studentWeeks[matricId].push(wEntry);
+    }
+
+    if (rowType === 'WEEK_SUMMARY') {
+      wEntry.totalTime = toNum(data[i][12]);
+      wEntry.totalSolves = toNum(data[i][13]);
+      wEntry.avgRating = toNum(data[i][14]);
+      wEntry.hasSummary = true;
+    } else {
+      if (severity === 'FLAGGED') {
+        wEntry.flaggedCount++;
+      } else if (severity === 'SUSPICIOUS') {
+        wEntry.suspiciousCount++;
+      }
+    }
+  }
+
+  var studentIds = Object.keys(studentWeeks);
+  for (var s = 0; s < studentIds.length; s++) {
+    var id = studentIds[s];
+    var weeksList = studentWeeks[id];
+    var flaggedWeeksCount = 0;
+    var cleanStreakCount = 0;
+    var streakBroken = false;
+
+    var finalizedWeeks = [];
+    for (var w = 0; w < weeksList.length; w++) {
+      var item = weeksList[w];
+      var hasFlagged = item.flaggedCount > 0;
+      var hasSuspicious = item.suspiciousCount > 0;
+      var isClean = !hasFlagged && !hasSuspicious && (item.totalSolves > 0);
+
+      if (hasFlagged) {
+        flaggedWeeksCount++;
+      }
+
+      if (!streakBroken) {
+        if (isClean) {
+          cleanStreakCount++;
+        } else {
+          streakBroken = true;
+        }
+      }
+
+      finalizedWeeks.push({
+        weekStart: item.weekStart,
+        weekEnd: item.weekEnd,
+        totalTime: item.totalTime,
+        totalSolves: item.totalSolves,
+        avgRating: item.avgRating,
+        flaggedCount: item.flaggedCount,
+        suspiciousCount: item.suspiciousCount,
+        hasFlagged: hasFlagged,
+        hasSuspicious: hasSuspicious,
+        isClean: isClean
+      });
+    }
+
+    var prevStats = finalizedWeeks.length > 0 ? {
+      totalTime: finalizedWeeks[0].totalTime,
+      totalSolves: finalizedWeeks[0].totalSolves,
+      avgRating: finalizedWeeks[0].avgRating
+    } : null;
+
+    map[id] = {
+      previousWeekStats: prevStats,
+      weeks: finalizedWeeks,
+      flaggedWeeks: flaggedWeeksCount,
+      cleanStreak: cleanStreakCount
+    };
+  }
+
+  return map;
+}
+
+/**
+ * Load previous week stats for all students in a single scan.
+ * Preserved for backward compatibility, backed by loadStudentAuditHistory.
+ */
+function loadPreviousWeekStatsMap(ss) {
+  var history = loadStudentAuditHistory(ss, 1);
+  var map = {};
+  for (var id in history) {
+    if (history[id] && history[id].previousWeekStats) {
+      map[id] = history[id].previousWeekStats;
+    }
+  }
   return map;
 }
 
@@ -551,4 +699,11 @@ function formatRoundUp2(val) {
   var factor = 100;
   var rounded = Math.ceil(n * factor) / factor;
   return rounded.toFixed(2);
+}
+
+/**
+ * Canonical helper aliasing roundUp2 for cross-module compatibility.
+ */
+function _roundUp2Helper(val) {
+  return roundUp2(val);
 }

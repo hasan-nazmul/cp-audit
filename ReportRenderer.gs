@@ -30,16 +30,6 @@ var RENDERER_THEME = {
 
 // ─── Math & Markdown Formatting Helpers ─────────────────────────────
 
-function _roundUp2Helper(val) {
-  if (typeof roundUp2 === 'function') return roundUp2(val);
-  if (val === null || val === undefined || val === '') return 0;
-  var n = Number(val);
-  if (isNaN(n)) return val;
-  if (Math.floor(n) === n) return n;
-  var factor = 100;
-  var rounded = Math.ceil(n * factor) / factor;
-  return Number(rounded.toFixed(2));
-}
 
 /**
  * Clean and normalize raw LaTeX math commands into readable plain text/Unicode for email.
@@ -353,7 +343,7 @@ function renderStudentEmailHtml(studentInfo, anomalies, stats, appreciations, co
   var statItems = [
     { val: (stats ? stats.totalSolves : 0), label: 'Total Solves', color: '#0f172a', accent: '#e2e8f0', icon: '🏆' },
     { val: (stats ? stats.verifiedSolves : 0), label: 'Verified', color: '#059669', accent: '#d1fae5', icon: '✅' },
-    { val: (stats ? stats.totalTime : 0) + 'm', label: 'Study Time', color: '#2563eb', accent: '#dbeafe', icon: '⏱️' },
+    { val: (stats ? stats.totalTime : 0) + 'm', label: 'Practice Time', color: '#2563eb', accent: '#dbeafe', icon: '⏱️' },
     { val: avgRating, label: 'Avg Rating', color: '#7c3aed', accent: '#ede9fe', icon: '⭐' }
   ];
 
@@ -411,6 +401,17 @@ function renderStudentEmailHtml(studentInfo, anomalies, stats, appreciations, co
     html += '<div style="font-weight:800;font-size:12px;text-transform:uppercase;letter-spacing:.8px;color:#4338ca;margin-bottom:8px">🤖 Personalized Coach\'s Note</div>';
     html += '<div style="font-size:14px;color:#1e3a8a;line-height:1.65">' + escHtml(aiNote) + '</div>';
     html += '</div>';
+  }
+
+  // 1b. Weekly Action Plan Card (B2)
+  if (coachingSummary && coachingSummary.advisedActions && coachingSummary.advisedActions.length > 0) {
+    html += '<div style="background:#f8fafc;border:1px solid #cbd5e1;border-left:4px solid #6366f1;border-radius:12px;padding:16px 18px;margin:0 0 20px;box-shadow:0 2px 6px rgba(0,0,0,.02)">';
+    html += '<div style="font-weight:800;font-size:12px;text-transform:uppercase;letter-spacing:.8px;color:#334155;margin-bottom:8px">📋 This Week\'s Focus (' + Math.min(coachingSummary.advisedActions.length, 3) + ' Priority Actions)</div>';
+    html += '<ol style="margin:0;padding-left:20px;font-size:13px;color:#1e293b;line-height:1.6">';
+    for (var actI = 0; actI < Math.min(coachingSummary.advisedActions.length, 3); actI++) {
+      html += '<li style="margin-bottom:4px"><strong>' + escHtml(coachingSummary.advisedActions[actI]) + '</strong></li>';
+    }
+    html += '</ol></div>';
   }
 
   // 2. Rating Progression & Next Milestone Card
@@ -474,6 +475,25 @@ function renderStudentEmailHtml(studentInfo, anomalies, stats, appreciations, co
 
     html += '<div style="margin-top:10px;font-size:14px;color:' + vInfo.textColor + ';line-height:1.6">';
     html += '<strong>Current Working Tier:</strong> <span style="display:inline-block;background:#ffffff;padding:2px 8px;border-radius:6px;border:1px solid ' + vInfo.border + ';font-weight:800;color:' + vInfo.textColor + '">' + cTier + ' Rating</span> <span style="font-size:12px;color:#64748b">(majority of last 20 solves)</span><br>';
+
+    // Tier Milestone Progress Bar (B3)
+    var currentTierObj = null;
+    for (var toI = 0; toI < tierBreakdown.length; toI++) {
+      if (tierBreakdown[toI].tier === cTier) { currentTierObj = tierBreakdown[toI]; break; }
+    }
+    var currentTierSolves = currentTierObj ? currentTierObj.solves : 0;
+    var targetMilestone = 20;
+    var progressPct = Math.min(100, Math.round((currentTierSolves / targetMilestone) * 100));
+    var remainingMilestone = Math.max(0, targetMilestone - currentTierSolves);
+    var milestoneText = remainingMilestone > 0 ? (remainingMilestone + ' more to milestone') : 'Milestone reached!';
+
+    html += '<div style="margin:10px 0 8px">';
+    html += '<table cellpadding="0" cellspacing="0" border="0" width="100%" style="background:#e2e8f0;border-radius:6px;overflow:hidden;height:8px">';
+    html += '<tr><td width="' + progressPct + '%" style="background:#6366f1;height:8px"></td><td width="' + (100 - progressPct) + '%"></td></tr>';
+    html += '</table>';
+    html += '<div style="font-size:11px;color:#64748b;margin-top:4px;font-weight:600">' + currentTierSolves + '/' + targetMilestone + ' solves (' + progressPct + '%) — ' + milestoneText + '</div>';
+    html += '</div>';
+
     html += '<div style="margin-top:8px;padding:12px 14px;background:#ffffff;border-radius:10px;border:1px solid ' + vInfo.border + ';font-size:13px;line-height:1.55">';
     html += '<strong style="color:' + vInfo.textColor + '">Engine Guidance:</strong> ' + escHtml(cAdvice || vInfo.desc);
     html += '</div></div>';
@@ -889,7 +909,10 @@ function renderInstructorDigestEmailHtml(cohortAnomalies, cohortAppreciations, c
       html += '<td style="padding:10px;border-bottom:1px solid #f1f5f9;vertical-align:top"><strong style="color:#0f172a;font-size:12px">' + escHtml(stName) + '</strong><br><span style="font-size:10px;color:#64748b">' + escHtml(cMatric) + '</span></td>';
       html += '<td style="padding:10px;text-align:center;border-bottom:1px solid #f1f5f9;vertical-align:top;font-weight:800;color:#334155">' + (cData.currentTier || 800) + '</td>';
       html += '<td style="padding:10px;text-align:center;border-bottom:1px solid #f1f5f9;vertical-align:top"><span style="display:inline-block;padding:3px 8px;border-radius:9999px;font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:.5px;white-space:nowrap;background:' + vBadgeBg + ';color:' + vBadgeColor + '">' + escHtml(vText.replace(/_/g, ' ')) + '</span></td>';
-      html += '<td style="padding:10px;border-bottom:1px solid #f1f5f9;font-size:11px;line-height:1.45;color:#334155;vertical-align:top">' + escHtml(cData.progressionAdvice || cData.overallRecommendation || '—') + '</td>';
+      var instructorAction = (cData.advisedActions && cData.advisedActions.length > 0)
+        ? ('<div style="margin-top:6px;font-weight:700;color:#2563eb">👉 Action: ' + escHtml(cData.advisedActions[0]) + '</div>')
+        : '';
+      html += '<td style="padding:10px;border-bottom:1px solid #f1f5f9;font-size:11px;line-height:1.45;color:#334155;vertical-align:top">' + escHtml(cData.progressionAdvice || cData.overallRecommendation || '—') + instructorAction + '</td>';
       html += '<td style="padding:10px;border-bottom:1px solid #f1f5f9;font-size:11px;line-height:1.45;vertical-align:top">' + topicNotesHtml + '</td>';
       html += '</tr>';
     }

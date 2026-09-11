@@ -14,21 +14,11 @@
    STRICT INTEGRITY AUDIT ENGINE
    ═══════════════════════════════════════════════════════════════════ */
 
-function _roundUp2Helper(val) {
-  if (typeof roundUp2 === 'function') return roundUp2(val);
-  if (val === null || val === undefined || val === '') return 0;
-  var n = Number(val);
-  if (isNaN(n)) return val;
-  if (Math.floor(n) === n) return n;
-  var factor = 100;
-  var rounded = Math.ceil(n * factor) / factor;
-  return Number(rounded.toFixed(2));
-}
 
 /**
  * Run authoritative multi-vector integrity audit on a student's weekly submissions.
  */
-function runStudentAudit(studentInfo, logRows, cfIndex, rollingAvgRating, prevWeekStats, weekStart, weekEnd, acIndex) {
+function runStudentAudit(studentInfo, logRows, cfIndex, rollingAvgRating, prevWeekStats, weekStart, weekEnd, acIndex, lcIndex, studentHistory) {
   var anomalies = [];
   var stats = initializeStudentStats(studentInfo);
   var acTimes = [];
@@ -62,6 +52,23 @@ function runStudentAudit(studentInfo, logRows, cfIndex, rollingAvgRating, prevWe
 
   for (var i = 0; i < logRows.length; i++) {
     var row = logRows[i];
+
+    // 0a. FUTURE_TIMESTAMP Check (Logged date is beyond the audit week window)
+    if (row.date && weekEnd && row.date.getTime() > weekEnd.getTime()) {
+      anomalies.push(createAnomalyObject(row, 'FUTURE_TIMESTAMP',
+        'Logged date ' + formatDate(row.date) + ' is in the future (after week end ' + formatDate(weekEnd) + ').', 'FLAGGED'));
+    }
+
+    // 0b. TIME_MISSING & TIME_IMPLAUSIBLE Plausibility Guards
+    if (row.verdict === 'AC') {
+      if (!row.time || row.time <= 0) {
+        anomalies.push(createAnomalyObject(row, 'TIME_MISSING',
+          'AC claimed with no solve time recorded. Please log your practice time for accurate tracking.', 'INFO'));
+      } else if (row.time > 480) {
+        anomalies.push(createAnomalyObject(row, 'TIME_IMPLAUSIBLE',
+          'Claimed ' + row.time + ' min (' + _roundUp2Helper(row.time / 60) + ' hours) on a single problem. If this was spread across sessions, consider splitting into separate log entries.', 'SUSPICIOUS'));
+      }
+    }
 
     // Generate unified problemKey for cross-platform duplicate detection
     var problemKey = '';
@@ -139,6 +146,16 @@ function runStudentAudit(studentInfo, logRows, cfIndex, rollingAvgRating, prevWe
               : 'Claimed date ' + formatDate(row.date) + ' differs from AtCoder AC date ' + formatDate(acDate);
             anomalies.push(createAnomalyObject(row, 'DATE_MISMATCH', acMismatchMsg, 'FLAGGED'));
           }
+
+          // Collect AC time for burst & inter-solve speed plausibility within the audit week
+          if (acTruth.v === 'AC' && acDate >= weekStart && acDate <= weekEnd) {
+            acTimes.push({
+              time: acTruth.t,
+              rating: row.rating || 0,
+              row: row,
+              contestId: 'atcoder_' + (row.contestId || '')
+            });
+          }
         }
       } else {
         // Problem not found in AtCoder submission history
@@ -151,7 +168,78 @@ function runStudentAudit(studentInfo, logRows, cfIndex, rollingAvgRating, prevWe
       continue;
     }
 
-    // ── Non-Codeforces / Non-AtCoder / CF Gym & Non-Contest Problems (Manual / LeetCode / Gym / Other OJ) ──
+    // ── LeetCode Problems: Verify against LeetCode GraphQL truth ──
+    if (row.platform === 'leetcode' && lcIndex) {
+      var lcSlug = (row.titleSlug || '').toLowerCase().trim();
+      if (!lcSlug && row.link) {
+        var lcMatch = String(row.link).match(/problems\/([a-zA-Z0-9-]+)/i);
+        if (lcMatch) lcSlug = lcMatch[1].toLowerCase().replace(/\/+$/, '');
+      }
+      var lcTruth = lcSlug ? lcIndex[lcSlug] : null;
+
+      stats.totalTime += row.time;
+      if (row.verdict === 'AC') {
+        stats.totalSolves++;
+        if (row.hasHint) {
+          stats.hintCount++;
+          if (row.category) {
+            stats.tagHintCounts[row.category] = (stats.tagHintCounts[row.category] || 0) + 1;
+          }
+        } else {
+          stats.soloSolves++;
+        }
+        if (row.rating > 0) { stats.ratingSum += row.rating; stats.ratingCount++; }
+        if (row.category) {
+          stats.tagCounts[row.category] = (stats.tagCounts[row.category] || 0) + 1;
+        }
+      }
+
+      if (lcTruth) {
+        if (row.verdict === 'AC' && lcTruth.v === 'AC') {
+          stats.verifiedSolves++;
+        }
+
+        // WRONG_VERDICT check
+        if (row.verdict === 'AC' && lcTruth.v && lcTruth.v !== 'AC') {
+          anomalies.push(createAnomalyObject(row, 'WRONG_VERDICT',
+            'Claimed AC but LeetCode verdict is ' + lcTruth.v, 'FLAGGED'));
+          stats.unverifiedSolves++;
+        }
+
+        // DATE_MISMATCH check
+        if (lcTruth.t && row.verdict === 'AC' && row.date) {
+          var lcDate = new Date(lcTruth.t * 1000);
+          var lcDayDiff = Math.abs(Math.floor((lcDate.getTime() - row.date.getTime()) / 86400000));
+          if (lcDayDiff > 1) {
+            var lcOutsideWeek = (lcDate.getTime() < weekStart.getTime() || lcDate.getTime() > weekEnd.getTime());
+            var lcMismatchMsg = lcOutsideWeek
+              ? 'LeetCode AC was achieved on ' + formatDate(lcDate) + ' (outside current week). Recycled problem entry.'
+              : 'Claimed date ' + formatDate(row.date) + ' differs from LeetCode AC date ' + formatDate(lcDate);
+            anomalies.push(createAnomalyObject(row, 'DATE_MISMATCH', lcMismatchMsg, 'FLAGGED'));
+          }
+
+          // Collect AC time for burst & inter-solve speed plausibility within the audit week
+          if (lcTruth.v === 'AC' && lcDate >= weekStart && lcDate <= weekEnd) {
+            acTimes.push({
+              time: lcTruth.t,
+              rating: row.rating || 0,
+              row: row,
+              contestId: 'leetcode_' + (lcSlug || '')
+            });
+          }
+        }
+      } else {
+        // Problem not found in LeetCode submission history
+        if (row.verdict === 'AC') {
+          anomalies.push(createAnomalyObject(row, 'GHOST_AC',
+            'Claimed AC but zero submissions found on registered LeetCode handle for ' + (lcSlug || row.link || 'problem'), 'FLAGGED'));
+          stats.unverifiedSolves++;
+        }
+      }
+      continue;
+    }
+
+    // ── Non-Codeforces / Non-AtCoder / Non-LeetCode / CF Gym & Non-Contest Problems (Manual / Gym / Other OJ) ──
     var isGymProblem = row.isGym || (row.category === 'Gym') || (row.category === 'CF Gym') || (Number(row.contestId) >= 100000) || /gym/i.test(row.link || '');
     var isUnsupportedCf = row.platform === 'codeforces_unsupported' || row.isUnsupportedCf || /codeforces\.com\/(?:gym|group|edu|newcomer|acmsguru)\//i.test(row.link || '') || (!row.contestId && /codeforces\.com/i.test(row.link || ''));
 
@@ -252,6 +340,24 @@ function runStudentAudit(studentInfo, logRows, cfIndex, rollingAvgRating, prevWe
           'SKIPPED submissions detected alongside multi-handle AC pattern', 'FLAGGED', submissionLinks));
       }
 
+      // 5b. TIME_INFLATION (Claimed practice time significantly exceeds OJ duration between first submission and AC)
+      if (row.time > 0 && truth.acTime && truth.subs && truth.subs.length > 0) {
+        var earliestSub = Infinity;
+        for (var si = 0; si < truth.subs.length; si++) {
+          if (truth.subs[si].t && truth.subs[si].t < earliestSub) {
+            earliestSub = truth.subs[si].t;
+          }
+        }
+        if (earliestSub < Infinity) {
+          var ojDurationMin = Math.round((truth.acTime - earliestSub) / 60);
+          if (ojDurationMin > 0 && row.time > ojDurationMin * 3 && (row.time - ojDurationMin) > 30) {
+            anomalies.push(createAnomalyObject(row, 'TIME_INFLATION',
+              'Claimed ' + row.time + ' min, but OJ records show first submission to AC was ~' +
+              ojDurationMin + ' min', 'SUSPICIOUS', submissionLinks));
+          }
+        }
+      }
+
       // Collect AC time for burst detection within the audit week
       if (row.verdict === 'AC' && truth.acTime) {
         var acDateObj = new Date(truth.acTime * 1000);
@@ -289,6 +395,20 @@ function runStudentAudit(studentInfo, logRows, cfIndex, rollingAvgRating, prevWe
     }
   }
 
+  // 7b. SUSTAINED_SPIKE — Consistent difficulty jump across multiple problems
+  // Count AC rows with rating >= rollingAvgRating + 300 (below single RATING_SPIKE_DELTA of 500)
+  var elevatedCount = 0;
+  for (var escI = 0; escI < logRows.length; escI++) {
+    if (logRows[escI].verdict === 'AC' && logRows[escI].rating >= rollingAvgRating + 300) {
+      elevatedCount++;
+    }
+  }
+  if (elevatedCount >= 3) {
+    anomalies.push(createAnomalyObject(logRows[0] || {}, 'SUSTAINED_SPIKE',
+      elevatedCount + ' problems solved this week at 300+ above your baseline (' +
+      Math.round(rollingAvgRating) + '). Consistent difficulty jump detected.', 'SUSPICIOUS'));
+  }
+
   // 8. BURST_MODE DETECTION (3+ solves in 15 min across different contests)
   acTimes.sort(function(a, b) { return a.time - b.time; });
   for (var bIdx = 0; bIdx < acTimes.length; bIdx++) {
@@ -319,6 +439,37 @@ function runStudentAudit(studentInfo, logRows, cfIndex, rollingAvgRating, prevWe
     }
   }
 
+  // 9. IMPLAUSIBLE_SPEED — Rating-aware inter-solve gap analysis
+  // Minimum plausible solve time (minutes) scales with problem difficulty:
+  // Formula: max(3, floor((rating - 500) / 100)) minutes
+  // Only fires for problems at or above student's baseline rating
+  var speedPlausibilityEnabled = (typeof AUDIT_SPEED_PLAUSIBILITY_ENABLED !== 'undefined') ? (AUDIT_SPEED_PLAUSIBILITY_ENABLED == 1) : true;
+  if (speedPlausibilityEnabled && acTimes.length > 1) {
+    for (var sIdx = 1; sIdx < acTimes.length; sIdx++) {
+      var prevAc = acTimes[sIdx - 1];
+      var currAc = acTimes[sIdx];
+
+      // Skip same-contest pairs (legitimate live contest participation)
+      if (prevAc.contestId && currAc.contestId && prevAc.contestId === currAc.contestId) continue;
+
+      var gapMinutes = (currAc.time - prevAc.time) / 60;
+      var currRating = currAc.rating || 0;
+
+      // Only check problems at or above student's baseline
+      if (currRating < rollingAvgRating) continue;
+
+      var minPlausibleMin = Math.max(3, Math.floor((currRating - 500) / 100));
+
+      if (gapMinutes >= 0 && gapMinutes < minPlausibleMin) {
+        var speedSev = currRating >= personalBurstThreshold ? 'FLAGGED' : 'SUSPICIOUS';
+        anomalies.push(createAnomalyObject(currAc.row, 'IMPLAUSIBLE_SPEED',
+          'AC on ' + currRating + '-rated problem only ' + Math.round(gapMinutes) +
+          ' min after previous AC (minimum plausible: ' + minPlausibleMin +
+          ' min for this difficulty, your baseline: ' + Math.round(rollingAvgRating) + ')', speedSev));
+      }
+    }
+  }
+
   // Compute final statistics
   stats.avgRating = stats.ratingCount > 0 ? _roundUp2Helper(stats.ratingSum / stats.ratingCount) : 0;
   stats.hintRate = stats.totalSolves > 0 ? _roundUp2Helper((stats.hintCount / stats.totalSolves) * 100) : 0;
@@ -332,6 +483,11 @@ function runStudentAudit(studentInfo, logRows, cfIndex, rollingAvgRating, prevWe
   var appreciations = [];
   var concerns = [];
 
+  // First-Week Welcome Message (C3)
+  if (!prevWeekStats && stats.totalSolves >= 1) {
+    appreciations.push("Welcome to your first tracked week! You logged " + stats.totalSolves + " solves — this is your baseline. Every week from here, you'll see your growth tracked and celebrated.");
+  }
+
   if (prevWeekStats) {
     var timeDelta = stats.totalTime - prevWeekStats.totalTime;
     var solveDelta = stats.totalSolves - prevWeekStats.totalSolves;
@@ -340,7 +496,12 @@ function runStudentAudit(studentInfo, logRows, cfIndex, rollingAvgRating, prevWe
     if (timeDelta >= 60) {
       appreciations.push('Practice time increased by ' + timeDelta + ' min compared to last week. Fantastic dedication!');
     } else if (timeDelta <= -60) {
-      concerns.push('Practice time decreased by ' + Math.abs(timeDelta) + ' min vs last week. A consistent 20-30 min daily session will quickly rebuild your momentum.');
+      // Soften Concern Language for Active Students (C2)
+      if (stats.totalSolves >= 3) {
+        concerns.push('Practice time was ' + Math.abs(timeDelta) + ' min lower than last week, but you still showed up with ' + stats.totalSolves + ' solves. Even lighter weeks count when you stay consistent.');
+      } else {
+        concerns.push('Practice time decreased by ' + Math.abs(timeDelta) + ' min vs last week. A consistent 20-30 min daily session will quickly rebuild your momentum.');
+      }
     }
 
     if (solveDelta >= 3) {
@@ -361,11 +522,45 @@ function runStudentAudit(studentInfo, logRows, cfIndex, rollingAvgRating, prevWe
     }
   }
 
-  // Hint habits & independence analysis
+  // Hint habits & independence analysis (B4)
   if (stats.totalSolves >= 5 && stats.hintCount === 0) {
     appreciations.push('100% independent solves this week (' + stats.totalSolves + ' solo ACs)! Zero reliance on hints or editorials is building immense contest-grade problem-solving grit.');
   } else if (stats.totalSolves >= 3 && stats.hintRate >= 40) {
     concerns.push('High hint reliance detected: ' + stats.hintRate + '% of your solves used hints/editorials (' + stats.hintCount + '/' + stats.totalSolves + '). Try spending at least 25-30 minutes thinking independently before opening any hint.');
+  } else if (stats.totalSolves >= 3 && stats.hintRate >= 20 && stats.hintRate < 40) {
+    appreciations.push('Good balance of independent and guided practice (' + stats.hintRate + '% hints). You are actively challenging yourself while maintaining independence.');
+  }
+
+  // Delta celebration: drop of >=10% in hint rate vs previous week
+  if (prevWeekStats && prevWeekStats.hintRate !== undefined && stats.hintRate !== undefined && stats.totalSolves >= 2) {
+    var hintDelta = prevWeekStats.hintRate - stats.hintRate;
+    if (hintDelta >= 10) {
+      appreciations.push('Your hint reliance dropped from ' + Math.round(prevWeekStats.hintRate) + '% to ' + Math.round(stats.hintRate) + '% — real independence growth!');
+    }
+  }
+
+  // Repeat Offender Analysis & Auto-Escalation (A6)
+  var flaggedWeeks = (studentHistory && typeof studentHistory.flaggedWeeks === 'number')
+    ? studentHistory.flaggedWeeks
+    : (prevWeekStats && typeof prevWeekStats.flaggedWeeks === 'number' ? prevWeekStats.flaggedWeeks : 0);
+
+  if (flaggedWeeks >= 2) {
+    concerns.unshift('Verification discrepancies detected in ' + flaggedWeeks + ' of last 4 audit weeks. New findings auto-escalated to FLAGGED severity.');
+    for (var escIdx = 0; escIdx < anomalies.length; escIdx++) {
+      if (anomalies[escIdx].severity === 'SUSPICIOUS') {
+        anomalies[escIdx].severity = 'FLAGGED';
+        anomalies[escIdx].detail = (anomalies[escIdx].detail || '') + ' [Auto-escalated to FLAGGED: repeat discrepancy history]';
+      }
+    }
+  }
+
+  // Celebration Streaks (C4)
+  var cleanStreak = (studentHistory && typeof studentHistory.cleanStreak === 'number')
+    ? studentHistory.cleanStreak
+    : (prevWeekStats && typeof prevWeekStats.cleanStreak === 'number' ? prevWeekStats.cleanStreak : 0);
+
+  if (cleanStreak >= 3 && stats.totalSolves > 0 && anomalies.length === 0) {
+    appreciations.push('🔥 ' + cleanStreak + '-week clean streak! Consistent verified practice over multiple weeks is building rock-solid mastery.');
   }
 
   // Integrity notes

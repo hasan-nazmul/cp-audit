@@ -222,15 +222,41 @@ function fetchCohortSubmissionsParallel(handlesList) {
     }
   }
 
-  // Safe cache store: individual puts prevent exceeding CacheService.putAll 100KB total batch limit
+  // D3: Batch cache writes using putAll within the 90KB safety threshold
   try {
     var cacheKeys = Object.keys(cacheEntriesToStore);
+    var currentBatch = {};
+    var currentBatchSize = 0;
+
     for (var cki = 0; cki < cacheKeys.length; cki++) {
       var ck = cacheKeys[cki];
+      var val = cacheEntriesToStore[ck];
+      var entrySize = ck.length + (val ? val.length : 0);
+
+      // If adding this entry would exceed 90KB (safe margin below 100KB), flush current batch
+      if (currentBatchSize + entrySize > 90000 && Object.keys(currentBatch).length > 0) {
+        try {
+          cache.putAll(currentBatch, AUDIT_CACHE_TTL);
+        } catch (batchPutErr) {
+          for (var bKey in currentBatch) {
+            try { cache.put(bKey, currentBatch[bKey], AUDIT_CACHE_TTL); } catch (e) {}
+          }
+        }
+        currentBatch = {};
+        currentBatchSize = 0;
+      }
+
+      currentBatch[ck] = val;
+      currentBatchSize += entrySize;
+    }
+
+    if (Object.keys(currentBatch).length > 0) {
       try {
-        cache.put(ck, cacheEntriesToStore[ck], AUDIT_CACHE_TTL);
-      } catch (perKeyErr) {
-        Logger.log('Cache put error for ' + ck + ': ' + perKeyErr);
+        cache.putAll(currentBatch, AUDIT_CACHE_TTL);
+      } catch (lastBatchErr) {
+        for (var lbKey in currentBatch) {
+          try { cache.put(lbKey, currentBatch[lbKey], AUDIT_CACHE_TTL); } catch (e) {}
+        }
       }
     }
   } catch (ce) {
@@ -315,9 +341,11 @@ function fetchCohortAtCoderSubmissions(handlesList) {
 
   var cache = CacheService.getScriptCache();
   var sixMonthsAgo = Math.floor((Date.now() - 180 * 86400 * 1000) / 1000);
+  var missingHandles = [];
 
   for (var i = 0; i < handlesList.length; i++) {
     var handle = handlesList[i];
+    if (!handle) continue;
     var handleLower = handle.toLowerCase();
     var cacheKey = 'ac_sub_' + handleLower;
     var cached = cache.get(cacheKey);
@@ -331,16 +359,100 @@ function fetchCohortAtCoderSubmissions(handlesList) {
         }
       } catch (e) { /* re-fetch */ }
     }
+    missingHandles.push(handle);
+  }
 
-    // Fetch from API (recent 6 months)
-    var subMap = fetchAndIndexAtCoderSubmissions(handle, sixMonthsAgo);
-    resultMap[handleLower] = subMap;
+  if (missingHandles.length === 0) return resultMap;
 
-    var jsonStr = JSON.stringify(subMap);
-    if (jsonStr.length <= 90000) {
-      cache.put(cacheKey, jsonStr, AUDIT_CACHE_TTL);
+  // D2: Batch into groups of 3 using UrlFetchApp.fetchAll with a 1.5s inter-batch throttle
+  var batchSize = 3;
+  var cacheEntriesToStore = {};
+
+  for (var b = 0; b < missingHandles.length; b += batchSize) {
+    var currentBatchHandles = missingHandles.slice(b, b + batchSize);
+    var requests = [];
+
+    for (var r = 0; r < currentBatchHandles.length; r++) {
+      var h = currentBatchHandles[r];
+      var url = ((typeof ATCODER_API_BASE !== 'undefined') ? ATCODER_API_BASE : 'https://kenkoooo.com/atcoder/atcoder-api/v3') +
+        '/user/submissions?user=' + encodeURIComponent(h) + '&from_second=' + sixMonthsAgo;
+      requests.push({ url: url, muteHttpExceptions: true });
+    }
+
+    try {
+      if (typeof UrlFetchApp !== 'undefined' && typeof UrlFetchApp.fetchAll === 'function') {
+        var responses = UrlFetchApp.fetchAll(requests);
+        for (var respI = 0; respI < responses.length; respI++) {
+          var hndl = currentBatchHandles[respI];
+          var hndlLower = hndl.toLowerCase();
+          var resp = responses[respI];
+          var subMap = {};
+
+          if (resp && resp.getResponseCode() === 200) {
+            try {
+              var list = JSON.parse(resp.getContentText());
+              if (Array.isArray(list)) {
+                list.sort(function(a, b) { return a.epoch_second - b.epoch_second; });
+                var attemptsMap = {};
+                for (var li = 0; li < list.length; li++) {
+                  var s = list[li];
+                  if (!s.problem_id) continue;
+                  var pKey = String(s.problem_id).toLowerCase();
+                  attemptsMap[pKey] = (attemptsMap[pKey] || 0) + 1;
+                  var isAc = (s.result === 'AC');
+                  var existing = subMap[pKey];
+                  if (!existing || isAc || existing.v !== 'AC') {
+                    subMap[pKey] = {
+                      v: s.result || '',
+                      s: attemptsMap[pKey],
+                      t: s.epoch_second || 0,
+                      cid: s.contest_id || '',
+                      execTime: s.execution_time || 0
+                    };
+                  } else {
+                    existing.s = attemptsMap[pKey];
+                  }
+                }
+              }
+            } catch (pErr) {
+              Logger.log('AtCoder JSON parse error for ' + hndl + ': ' + pErr);
+            }
+          }
+          resultMap[hndlLower] = subMap;
+          var jsonStr = JSON.stringify(subMap);
+          if (jsonStr.length <= 90000) {
+            cacheEntriesToStore['ac_sub_' + hndlLower] = jsonStr;
+          }
+        }
+      } else {
+        // Fallback to sequential fetchAndIndexAtCoderSubmissions
+        for (var seqI = 0; seqI < currentBatchHandles.length; seqI++) {
+          var seqH = currentBatchHandles[seqI];
+          var seqMap = fetchAndIndexAtCoderSubmissions(seqH, sixMonthsAgo);
+          var seqLower = seqH.toLowerCase();
+          resultMap[seqLower] = seqMap;
+          var sStr = JSON.stringify(seqMap);
+          if (sStr.length <= 90000) {
+            cacheEntriesToStore['ac_sub_' + seqLower] = sStr;
+          }
+        }
+      }
+    } catch (batchErr) {
+      Logger.log('AtCoder batch fetch error: ' + batchErr);
+    }
+
+    // Respect AtCoder API rate limits (1.5s delay between batches)
+    if (b + batchSize < missingHandles.length) {
+      Utilities.sleep(1500);
     }
   }
+
+  // Safe batch cache write
+  try {
+    for (var cKey in cacheEntriesToStore) {
+      try { cache.put(cKey, cacheEntriesToStore[cKey], (typeof AUDIT_CACHE_TTL !== 'undefined' ? AUDIT_CACHE_TTL : 900)); } catch (e) {}
+    }
+  } catch (ce) {}
 
   return resultMap;
 }
@@ -367,6 +479,80 @@ function buildAtCoderSubmissionIndex(studentHandles, cohortAtCoderMap) {
       var existing = index[pid];
       if (!existing || (sub.v === 'AC' && existing.v !== 'AC')) {
         index[pid] = sub;
+      }
+    }
+  }
+
+  return index;
+}
+
+/**
+ * Batch fetch and index recent LeetCode submissions for an entire cohort.
+ * Uses Script Cache with 'lc_sub_' prefix to avoid redundant GraphQL calls.
+ *
+ * @param {string[]} handlesList - Array of unique LeetCode handles.
+ * @returns {Object.<string, Object>} Map of handle -> submission map (slug -> { v, s, t }).
+ */
+function fetchCohortLeetCodeSubmissions(handlesList) {
+  var resultMap = {};
+  if (!Array.isArray(handlesList) || handlesList.length === 0) return resultMap;
+
+  var cache = CacheService.getScriptCache();
+
+  for (var i = 0; i < handlesList.length; i++) {
+    var handle = handlesList[i];
+    if (!handle) continue;
+    var handleLower = handle.toLowerCase();
+    var cacheKey = 'lc_sub_' + handleLower;
+    var cached = cache.get(cacheKey);
+
+    if (cached) {
+      try {
+        var parsed = JSON.parse(cached);
+        if (parsed && typeof parsed === 'object') {
+          resultMap[handleLower] = parsed;
+          continue;
+        }
+      } catch (e) { /* re-fetch */ }
+    }
+
+    var subMap = (typeof fetchAndIndexLeetCodeGraphQL === 'function')
+      ? fetchAndIndexLeetCodeGraphQL(handle)
+      : {};
+    resultMap[handleLower] = subMap;
+
+    var jsonStr = JSON.stringify(subMap);
+    if (jsonStr.length <= 90000) {
+      cache.put(cacheKey, jsonStr, (typeof AUDIT_CACHE_TTL !== 'undefined' ? AUDIT_CACHE_TTL : 900));
+    }
+  }
+
+  return resultMap;
+}
+
+/**
+ * Build per-student LeetCode submission index from cohort data.
+ * @param {string[]} studentHandles - Student's LeetCode handles.
+ * @param {Object} cohortLCMap - Cohort-wide LeetCode submissions map.
+ * @returns {Object.<string, Object>} Map of slug -> { v, s, t }.
+ */
+function buildLeetCodeSubmissionIndex(studentHandles, cohortLCMap) {
+  var index = {};
+  if (!Array.isArray(studentHandles) || !cohortLCMap) return index;
+
+  for (var h = 0; h < studentHandles.length; h++) {
+    var handle = studentHandles[h];
+    if (!handle) continue;
+    var handleLower = handle.toLowerCase();
+    var subs = cohortLCMap[handleLower];
+    if (!subs || typeof subs !== 'object') continue;
+
+    for (var slug in subs) {
+      if (!subs.hasOwnProperty(slug)) continue;
+      var sub = subs[slug];
+      var existing = index[slug];
+      if (!existing || (sub.v === 'AC' && existing.v !== 'AC')) {
+        index[slug] = sub;
       }
     }
   }

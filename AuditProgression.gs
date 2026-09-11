@@ -14,16 +14,6 @@
    RATING PROGRESSION & WEAKNESS COACHING ENGINE
    ═══════════════════════════════════════════════════════════════════ */
 
-function _roundUp2Helper(val) {
-  if (typeof roundUp2 === 'function') return roundUp2(val);
-  if (val === null || val === undefined || val === '') return 0;
-  var n = Number(val);
-  if (isNaN(n)) return val;
-  if (Math.floor(n) === n) return n;
-  var factor = 100;
-  var rounded = Math.ceil(n * factor) / factor;
-  return Number(rounded.toFixed(2));
-}
 
 /**
  * Analyze student's rating progression across all historical solves.
@@ -460,17 +450,32 @@ function analyzeTagWeaknesses(sheet, studentInfo, cfIndex, cohortSubmissionsMap,
 
   result.weakTags = candidateWeak.slice(0, 4);
 
-  // Generate clear, motivating advice lines with concrete archetypes
+  // Generate clear, motivating advice lines with concrete archetypes (B5: chained prereqs)
   for (var w = 0; w < result.weakTags.length; w++) {
     var item = result.weakTags[w];
     if (totalCFSolves >= 5) {
       var exText = item.examples ? ' Archetypes: ' + item.examples + '.' : '';
+
+      // Check if item has prerequisites and if student also has a gap in a prereq topic
+      var prereqNote = '';
+      if (item.prereqs && Array.isArray(item.prereqs) && item.prereqs.length > 0) {
+        for (var pi = 0; pi < item.prereqs.length; pi++) {
+          var prereqTag = item.prereqs[pi];
+          var prereqStat = tagStats[prereqTag];
+          var prereqSolves = prereqStat ? prereqStat.solves : 0;
+          if (prereqSolves < 3) {
+            prereqNote = ' (Prerequisite: solidify \'' + prereqTag + '\' first — only ' + prereqSolves + ' solve' + (prereqSolves === 1 ? '' : 's') + ').';
+            break;
+          }
+        }
+      }
+
       if (item.isMust) {
-        result.adviceLines.push('\u{1F3AF} Tier ' + studentTier + ' Milestone Requirement: \'' + item.tag + '\' is essential (only ' + item.solves + ' solve' + (item.solves === 1 ? '' : 's') + ').' + exText + ' Prioritize unassisted practice here!');
+        result.adviceLines.push('\u{1F3AF} Tier ' + studentTier + ' Milestone Requirement: \'' + item.tag + '\' is essential (only ' + item.solves + ' solve' + (item.solves === 1 ? '' : 's') + ').' + prereqNote + exText + ' Prioritize unassisted practice here!');
       } else if (item.isConsolidate) {
-        result.adviceLines.push('\u{1F527} Foundational Debt in \'' + item.tag + '\': Prior tier topic with only ' + item.solves + ' solve' + (item.solves === 1 ? '' : 's') + '.' + exText + ' Solidify to eliminate contest gaps.');
+        result.adviceLines.push('\u{1F527} Foundational Debt in \'' + item.tag + '\': Prior tier topic with only ' + item.solves + ' solve' + (item.solves === 1 ? '' : 's') + '.' + prereqNote + exText + ' Solidify to eliminate contest gaps.');
       } else {
-        result.adviceLines.push('\ud83d\udd34 Practice Gap in \'' + item.tag + '\' (' + studentTier + '-tier): Only ' + item.solves + ' solve' + (item.solves === 1 ? '' : 's') + '.' + exText);
+        result.adviceLines.push('\ud83d\udd34 Practice Gap in \'' + item.tag + '\' (' + studentTier + '-tier): Only ' + item.solves + ' solve' + (item.solves === 1 ? '' : 's') + '.' + prereqNote + exText);
       }
     }
   }
