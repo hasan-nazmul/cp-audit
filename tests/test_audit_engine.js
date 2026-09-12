@@ -803,6 +803,170 @@ test('SuggestionEngine generates actionable Codeforces problemset links', () => 
   assert.strictEqual(link, 'https://codeforces.com/problemset?tags=graphs&order=BY_RATING_ASC&minDifficulty=1200&maxDifficulty=1400');
 });
 
+// ── Group 11: Missing Handles & Unverified/Manual Platform Exemption Checks ──
+console.log('\n--- Group 11: Missing Handles & Unverified/Manual Platform Exemption Checks ---');
+
+test('runStudentAudit does NOT flag or warn when AtCoder handle is empty/null/whitespace', () => {
+  const studentInfo = {
+    matricId: 'C261011',
+    name: 'Ken',
+    cfHandle: 'ken_cf',
+    atCoderHandle: '   ', // whitespace/empty handle in roster
+    leetCodeHandle: ''
+  };
+  const weekStart = new Date('2026-09-01T00:00:00Z');
+  const weekEnd = new Date('2026-09-07T23:59:59Z');
+
+  const logRows = [
+    {
+      rowNum: 4,
+      link: 'https://atcoder.jp/contests/abc250/tasks/abc250_a',
+      verdict: 'AC',
+      claimedSubs: 1,
+      time: 25,
+      date: new Date('2026-09-03T12:00:00Z'),
+      category: 'AtCoder',
+      rating: 0,
+      hasHint: false,
+      platform: 'atcoder',
+      problemId: 'abc250_a'
+    }
+  ];
+
+  // AtCoder index is null / empty
+  const audit = sandbox.runStudentAudit(studentInfo, logRows, { index: {}, handles: ['ken_cf'] }, 1000, null, weekStart, weekEnd, null, null);
+
+  assert.strictEqual(audit.anomalies.length, 0, 'Must NOT generate GHOST_AC or any anomalies when AtCoder handle is empty');
+  assert.strictEqual(audit.stats.totalSolves, 1, 'AtCoder solve must be counted toward total solves');
+  assert.strictEqual(audit.stats.manualSolves, 1, 'AtCoder solve without handle must be counted as manual solve');
+  assert.strictEqual(audit.stats.totalTime, 25, 'Solve time must be counted in practice time');
+});
+
+test('runStudentAudit does NOT flag or warn when Codeforces handle is empty/null/whitespace', () => {
+  const studentInfo = {
+    matricId: 'C261012',
+    name: 'Leo',
+    cfHandle: '', // Empty CF handle in roster
+    atCoderHandle: '',
+    leetCodeHandle: ''
+  };
+  const weekStart = new Date('2026-09-01T00:00:00Z');
+  const weekEnd = new Date('2026-09-07T23:59:59Z');
+
+  const logRows = [
+    {
+      rowNum: 4,
+      link: 'https://codeforces.com/contest/1800/problem/A',
+      verdict: 'AC',
+      claimedSubs: 1,
+      time: 30,
+      date: new Date('2026-09-03T12:00:00Z'),
+      category: 'Codeforces',
+      rating: 1000,
+      hasHint: false,
+      platform: 'codeforces',
+      contestId: 1800,
+      problemIndex: 'A',
+      isGym: false
+    }
+  ];
+
+  // cfIndex has no handles
+  const cfIndex = { index: {}, handles: [], contestHandles: {} };
+  const audit = sandbox.runStudentAudit(studentInfo, logRows, cfIndex, 1000, null, weekStart, weekEnd, null, null);
+
+  assert.strictEqual(audit.anomalies.length, 0, 'Must NOT generate NO_VALID_HANDLE or GHOST_AC when CF handle is empty');
+  assert.strictEqual(audit.stats.totalSolves, 1, 'CF solve must be counted toward total solves');
+  assert.strictEqual(audit.stats.manualSolves, 1, 'CF solve without handle must be counted as manual solve');
+  assert.strictEqual(audit.stats.totalTime, 30, 'Solve time must be counted in practice time');
+});
+
+test('runStudentAudit does NOT flag or warn when LeetCode handle is empty/null/whitespace', () => {
+  const studentInfo = {
+    matricId: 'C261013',
+    name: 'Mia',
+    cfHandle: '',
+    atCoderHandle: '',
+    leetCodeHandle: null // null handle in roster
+  };
+  const weekStart = new Date('2026-09-01T00:00:00Z');
+  const weekEnd = new Date('2026-09-07T23:59:59Z');
+
+  const logRows = [
+    {
+      rowNum: 4,
+      link: 'https://leetcode.com/problems/climbing-stairs/',
+      verdict: 'AC',
+      claimedSubs: 1,
+      time: 20,
+      date: new Date('2026-09-03T12:00:00Z'),
+      category: 'LeetCode',
+      rating: 0,
+      hasHint: false,
+      platform: 'leetcode',
+      titleSlug: 'climbing-stairs'
+    }
+  ];
+
+  const audit = sandbox.runStudentAudit(studentInfo, logRows, { index: {}, handles: [] }, 1000, null, weekStart, weekEnd, null, null);
+
+  assert.strictEqual(audit.anomalies.length, 0, 'Must NOT generate GHOST_AC when LeetCode handle is empty');
+  assert.strictEqual(audit.stats.totalSolves, 1, 'LeetCode solve must be counted toward total solves');
+  assert.strictEqual(audit.stats.manualSolves, 1, 'LeetCode solve without handle must be counted as manual solve');
+  assert.strictEqual(audit.stats.totalTime, 20, 'Solve time must be counted in practice time');
+});
+
+test('runStudentAudit does NOT flag or warn for CF Gym and Other OJ problems', () => {
+  const studentInfo = {
+    matricId: 'C261014',
+    name: 'Noah',
+    cfHandle: 'noah_cf',
+    atCoderHandle: 'noah_ac',
+    leetCodeHandle: 'noah_lc'
+  };
+  const weekStart = new Date('2026-09-01T00:00:00Z');
+  const weekEnd = new Date('2026-09-07T23:59:59Z');
+
+  const logRows = [
+    {
+      rowNum: 4,
+      link: 'https://codeforces.com/gym/102951/problem/B',
+      verdict: 'AC',
+      claimedSubs: 1,
+      time: 35,
+      date: new Date('2026-09-03T12:00:00Z'),
+      category: 'Gym',
+      rating: 1300,
+      hasHint: false,
+      platform: 'codeforces',
+      contestId: 102951,
+      problemIndex: 'B',
+      isGym: true
+    },
+    {
+      rowNum: 5,
+      link: 'https://cses.fi/problemset/task/1068',
+      verdict: 'AC',
+      claimedSubs: 1,
+      time: 15,
+      date: new Date('2026-09-04T12:00:00Z'),
+      category: 'Other OJ',
+      rating: 0,
+      hasHint: false,
+      platform: 'other',
+      canonicalName: 'CSES 1068'
+    }
+  ];
+
+  const cfIndex = { index: {}, handles: ['noah_cf'], contestHandles: {} };
+  const audit = sandbox.runStudentAudit(studentInfo, logRows, cfIndex, 1000, null, weekStart, weekEnd, { index: {}, handles: ['noah_ac'] }, { index: {}, handles: ['noah_lc'] });
+
+  assert.strictEqual(audit.anomalies.length, 0, 'Gym and Other OJ problems must not trigger any anomalies');
+  assert.strictEqual(audit.stats.totalSolves, 2, 'Both solves must count');
+  assert.strictEqual(audit.stats.manualSolves, 2, 'Both solves must be manual');
+  assert.strictEqual(audit.stats.totalTime, 50, 'Both solve times must sum to 50');
+});
+
 console.log(`\n═══════════════════════════════════════════════`);
 console.log(`🏁 Test Results: ${passed} Passed, ${failed} Failed`);
 console.log(`═══════════════════════════════════════════════\n`);

@@ -27,28 +27,22 @@ function runStudentAudit(studentInfo, logRows, cfIndex, rollingAvgRating, prevWe
   var personalBurstThreshold = _roundUp2Helper(rollingAvgRating + AUDIT_PERSONAL_DELTA_BURST);
   var personalTimeThreshold = _roundUp2Helper(rollingAvgRating + AUDIT_PERSONAL_DELTA_TIME);
 
-  // Check if student has no valid CF handle registered (only for standard contest/problemset CF)
-  if (cfIndex.handles.length === 0) {
-    var hasCFProblems = logRows.some(function(r) {
-      var isGym = r.isGym || (r.category === 'Gym') || (Number(r.contestId) >= 100000);
-      var isUnsupported = (r.platform === 'codeforces_unsupported') || r.isUnsupportedCf;
-      return r.platform === 'codeforces' && !isGym && !isUnsupported;
-    });
-    if (hasCFProblems) {
-      anomalies.push({
-        rowNum: '-',
-        problem: 'Roster Profile',
-        verdict: '-',
-        rating: 0,
-        time: 0,
-        date: formatDate(new Date()),
-        type: 'NO_VALID_HANDLE',
-        detail: 'Codeforces handle missing or invalid in Roster. Automatic verification cannot verify claimed problems.',
-        severity: 'SUSPICIOUS',
-        links: []
-      });
-    }
-  }
+  // Determine verified handle availability for each platform
+  // If handle is missing, null, empty, or whitespace, problems on that platform are treated as unverified manual solves without flags/warnings
+  var studentCFHandles = (cfIndex && Array.isArray(cfIndex.handles))
+    ? cfIndex.handles
+    : sanitizeHandles(studentInfo ? studentInfo.cfHandle : '', 'codeforces');
+  var hasCFHandle = studentCFHandles.length > 0;
+
+  var studentACHandles = (acIndex && Array.isArray(acIndex.handles))
+    ? acIndex.handles
+    : sanitizeHandles(studentInfo ? studentInfo.atCoderHandle : '', 'atcoder');
+  var hasACHandle = studentACHandles.length > 0 && !!acIndex;
+
+  var studentLCHandles = (lcIndex && Array.isArray(lcIndex.handles))
+    ? lcIndex.handles
+    : sanitizeHandles(studentInfo ? studentInfo.leetCodeHandle : '', 'leetcode');
+  var hasLCHandle = studentLCHandles.length > 0 && !!lcIndex;
 
   for (var i = 0; i < logRows.length; i++) {
     var row = logRows[i];
@@ -101,10 +95,10 @@ function runStudentAudit(studentInfo, logRows, cfIndex, rollingAvgRating, prevWe
       seenAcProblems[problemKey] = true;
     }
 
-    // ── AtCoder Problems: Verify against AtCoder API truth ──
-    if (row.platform === 'atcoder' && acIndex) {
+    // ── AtCoder Problems: Verify against AtCoder API truth (only when student has registered handle) ──
+    if (row.platform === 'atcoder' && hasACHandle && acIndex) {
       var acKey = String(row.problemId || '').toLowerCase().trim();
-      var acTruth = acIndex[acKey];
+      var acTruth = acIndex.index ? acIndex.index[acKey] : acIndex[acKey];
 
       stats.totalTime += row.time;
       if (row.verdict === 'AC') {
@@ -131,7 +125,7 @@ function runStudentAudit(studentInfo, logRows, cfIndex, rollingAvgRating, prevWe
         // WRONG_VERDICT check
         if (row.verdict === 'AC' && acTruth.v && acTruth.v !== 'AC') {
           anomalies.push(createAnomalyObject(row, 'WRONG_VERDICT',
-            'Claimed AC but AtCoder best verdict is ' + acTruth.v, 'FLAGGED'));
+            'Claimed AC but AtCoder best verdict is ' + acTruth.v + ' (checked handle' + (studentACHandles.length > 1 ? 's' : '') + ': ' + studentACHandles.join(', ') + ')', 'FLAGGED'));
           stats.unverifiedSolves++;
         }
 
@@ -161,21 +155,21 @@ function runStudentAudit(studentInfo, logRows, cfIndex, rollingAvgRating, prevWe
         // Problem not found in AtCoder submission history
         if (row.verdict === 'AC') {
           anomalies.push(createAnomalyObject(row, 'GHOST_AC',
-            'Claimed AC but zero submissions found on registered AtCoder handle for ' + acKey, 'FLAGGED'));
+            'Claimed AC but zero submissions found on registered AtCoder handle' + (studentACHandles.length > 1 ? 's' : '') + ' (' + studentACHandles.join(', ') + ') for ' + acKey, 'FLAGGED'));
           stats.unverifiedSolves++;
         }
       }
       continue;
     }
 
-    // ── LeetCode Problems: Verify against LeetCode GraphQL truth ──
-    if (row.platform === 'leetcode' && lcIndex) {
+    // ── LeetCode Problems: Verify against LeetCode GraphQL truth (only when student has registered handle) ──
+    if (row.platform === 'leetcode' && hasLCHandle && lcIndex) {
       var lcSlug = (row.titleSlug || '').toLowerCase().trim();
       if (!lcSlug && row.link) {
         var lcMatch = String(row.link).match(/problems\/([a-zA-Z0-9-]+)/i);
         if (lcMatch) lcSlug = lcMatch[1].toLowerCase().replace(/\/+$/, '');
       }
-      var lcTruth = lcSlug ? lcIndex[lcSlug] : null;
+      var lcTruth = lcIndex.index ? lcIndex.index[lcSlug] : (lcSlug ? lcIndex[lcSlug] : null);
 
       stats.totalTime += row.time;
       if (row.verdict === 'AC') {
@@ -202,7 +196,7 @@ function runStudentAudit(studentInfo, logRows, cfIndex, rollingAvgRating, prevWe
         // WRONG_VERDICT check
         if (row.verdict === 'AC' && lcTruth.v && lcTruth.v !== 'AC') {
           anomalies.push(createAnomalyObject(row, 'WRONG_VERDICT',
-            'Claimed AC but LeetCode verdict is ' + lcTruth.v, 'FLAGGED'));
+            'Claimed AC but LeetCode verdict is ' + lcTruth.v + ' (checked handle' + (studentLCHandles.length > 1 ? 's' : '') + ': ' + studentLCHandles.join(', ') + ')', 'FLAGGED'));
           stats.unverifiedSolves++;
         }
 
@@ -232,18 +226,18 @@ function runStudentAudit(studentInfo, logRows, cfIndex, rollingAvgRating, prevWe
         // Problem not found in LeetCode submission history
         if (row.verdict === 'AC') {
           anomalies.push(createAnomalyObject(row, 'GHOST_AC',
-            'Claimed AC but zero submissions found on registered LeetCode handle for ' + (lcSlug || row.link || 'problem'), 'FLAGGED'));
+            'Claimed AC but zero submissions found on registered LeetCode handle' + (studentLCHandles.length > 1 ? 's' : '') + ' (' + studentLCHandles.join(', ') + ') for ' + (lcSlug || row.link || 'problem'), 'FLAGGED'));
           stats.unverifiedSolves++;
         }
       }
       continue;
     }
 
-    // ── Non-Codeforces / Non-AtCoder / Non-LeetCode / CF Gym & Non-Contest Problems (Manual / Gym / Other OJ) ──
+    // ── Non-Codeforces / Non-AtCoder / Non-LeetCode / CF Gym & Non-Contest Problems (Manual / Gym / Other OJ / Missing Handles) ──
     var isGymProblem = row.isGym || (row.category === 'Gym') || (row.category === 'CF Gym') || (Number(row.contestId) >= 100000) || /gym/i.test(row.link || '');
     var isUnsupportedCf = row.platform === 'codeforces_unsupported' || row.isUnsupportedCf || /codeforces\.com\/(?:gym|group|edu|newcomer|acmsguru)\//i.test(row.link || '') || (!row.contestId && /codeforces\.com/i.test(row.link || ''));
 
-    if (row.platform !== 'codeforces' || isGymProblem || isUnsupportedCf) {
+    if (row.platform !== 'codeforces' || isGymProblem || isUnsupportedCf || !hasCFHandle) {
       stats.totalTime += row.time;
       if (row.verdict === 'AC') {
         stats.totalSolves++;
@@ -300,7 +294,7 @@ function runStudentAudit(studentInfo, logRows, cfIndex, rollingAvgRating, prevWe
       // 1. WRONG_VERDICT (Claimed AC but OJ record is WA/TLE/MLE/etc.)
       if (row.verdict === 'AC' && truth.bestVerdict && truth.bestVerdict !== 'OK' && truth.bestVerdict !== 'UNKNOWN') {
         anomalies.push(createAnomalyObject(row, 'WRONG_VERDICT',
-          'Claimed AC but Codeforces best verdict is ' + truth.bestVerdict, 'FLAGGED', submissionLinks));
+          'Claimed AC but Codeforces best verdict is ' + truth.bestVerdict + ' (checked handle' + (studentCFHandles.length > 1 ? 's' : '') + ': ' + studentCFHandles.join(', ') + ')', 'FLAGGED', submissionLinks));
         stats.unverifiedSolves++;
         isRowFlagged = true;
       }
@@ -374,11 +368,11 @@ function runStudentAudit(studentInfo, logRows, cfIndex, rollingAvgRating, prevWe
       // Problem not found in any handle's submission history
       if (row.verdict === 'AC') {
         anomalies.push(createAnomalyObject(row, 'GHOST_AC',
-          'Claimed AC but zero submissions found on any registered handle for CF ' + pKey, 'FLAGGED'));
+          'Claimed AC but zero submissions found on registered Codeforces handle' + (studentCFHandles.length > 1 ? 's' : '') + ' (' + studentCFHandles.join(', ') + ') for ' + pKey, 'FLAGGED'));
         stats.unverifiedSolves++;
       } else {
         anomalies.push(createAnomalyObject(row, 'NO_SUB_CLAIMED',
-          'Row claims "' + row.verdict + '" but no CF submission exists', 'INFO'));
+          'Row claims "' + row.verdict + '" but no CF submission exists on handle' + (studentCFHandles.length > 1 ? 's' : '') + ' (' + studentCFHandles.join(', ') + ')', 'INFO'));
       }
     }
 
@@ -566,7 +560,7 @@ function runStudentAudit(studentInfo, logRows, cfIndex, rollingAvgRating, prevWe
   // Integrity notes
   var flaggedAnomalies = anomalies.filter(function(a) { return a.severity === 'FLAGGED'; });
   if (flaggedAnomalies.length > 0) {
-    concerns.push('We detected ' + flaggedAnomalies.length + ' entry discrepancy(ies) with Codeforces OJ records. Please ensure only authentic solves from your registered handle are logged.');
+    concerns.push('We detected ' + flaggedAnomalies.length + ' entry discrepancy(ies) with official OJ records. Please ensure only authentic solves from your registered handle(s) are logged.');
   } else if (anomalies.length === 0 && stats.totalSolves >= 1) {
     appreciations.push('100% clean and verified audit record this week (' + stats.totalSolves + ' verified solve' + (stats.totalSolves > 1 ? 's' : '') + '). Your discipline and honesty build real mastery!');
   }

@@ -188,7 +188,7 @@ function weeklyAuditAndHistory() {
 
       // Build AtCoder submission index for student
       var studentACHandles = sanitizeHandles(studentInfo.atCoderHandle, 'atcoder');
-      var acIndex = buildAtCoderSubmissionIndex(studentACHandles, cohortAtCoderMap);
+      var acIndex = (studentACHandles.length > 0) ? buildAtCoderSubmissionIndex(studentACHandles, cohortAtCoderMap) : null;
 
       // Build LeetCode submission index for student
       var studentLCHandles = sanitizeHandles(studentInfo.leetCodeHandle, 'leetcode');
