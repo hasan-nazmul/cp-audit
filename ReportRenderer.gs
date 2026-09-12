@@ -865,7 +865,11 @@ function renderInstructorDigestEmailHtml(cohortAnomalies, cohortAppreciations, c
       var cData = cohortCoachingSummaries[cMatric];
       if (!cData) continue;
 
+      // Skip students with zero activity — no meaningful coaching row to render
       var stMatch = statsByMatric[cMatric];
+      var stSolves = stMatch ? (stMatch.totalSolves || 0) : 0;
+      if (stSolves === 0 && !cData.progressionAdvice && (!cData.advisedActions || cData.advisedActions.length === 0)) continue;
+
       var stName = stMatch ? (stMatch.name || stMatch.studentName || cMatric) : cMatric;
 
       var rowBg2 = (cki % 2 === 0) ? '#ffffff' : '#fafbfc';

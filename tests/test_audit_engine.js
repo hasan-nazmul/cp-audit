@@ -621,12 +621,17 @@ test('runStudentAudit flags TIME_MISSING, TIME_IMPLAUSIBLE, and FUTURE_TIMESTAMP
   assert.ok(audit.anomalies.some(a => a.type === 'FUTURE_TIMESTAMP'), 'Should flag FUTURE_TIMESTAMP when date > weekEnd');
 });
 
-test('runStudentAudit flags TIME_INFLATION when claimed time greatly exceeds OJ submission-to-AC duration', () => {
+test('runStudentAudit flags TIME_INFLATION when claimed time greatly exceeds inter-problem gap', () => {
   const studentInfo = { matricId: 'C261005', name: 'Eve', cfHandle: 'eve_cf' };
   const weekStart = new Date('2026-09-01T00:00:00Z');
   const weekEnd = new Date('2026-09-07T23:59:59Z');
+
+  // Timeline: Previous problem (1799A) AC at T-300, then 1800A first sub at T, AC at T+360
+  // Inter-problem gap = (T+360) - (T-300) = 660 sec = 11 min
+  // Student claims 300 min → 300 > 11*3=33 AND (300-11)=289 > 60 → TIME_INFLATION
   const firstSubTime = 1756800000;
-  const acSubTime = firstSubTime + 300; // 5 min duration between first sub and AC
+  const acSubTime = firstSubTime + 360; // 6 min coding time on OJ
+  const prevProblemAcTime = firstSubTime - 300; // 5 min before first sub on 1800A
 
   const logRows = [
     {
@@ -634,7 +639,7 @@ test('runStudentAudit flags TIME_INFLATION when claimed time greatly exceeds OJ 
       link: 'https://codeforces.com/contest/1800/problem/A',
       verdict: 'AC',
       claimedSubs: 2,
-      time: 90, // Claims 90 min on problem solved in 5 min on OJ
+      time: 300, // Claims 300 min but OJ timeline shows only 11 min window
       date: new Date(acSubTime * 1000),
       category: 'Codeforces',
       rating: 1000,
@@ -652,9 +657,22 @@ test('runStudentAudit flags TIME_INFLATION when claimed time greatly exceeds OJ 
         attempts: 2,
         handles: { eve_cf: true },
         ratings: [1000],
+        contestId: '1800',
         subs: [
           { t: firstSubTime, v: 'WA', id: 301 },
           { t: acSubTime, v: 'OK', id: 302 }
+        ]
+      },
+      // Previous different problem — gives the inter-problem reference point
+      '1799A': {
+        bestVerdict: 'OK',
+        acTime: prevProblemAcTime,
+        attempts: 1,
+        handles: { eve_cf: true },
+        ratings: [800],
+        contestId: '1799',
+        subs: [
+          { t: prevProblemAcTime, v: 'OK', id: 300 }
         ]
       }
     },
@@ -664,7 +682,8 @@ test('runStudentAudit flags TIME_INFLATION when claimed time greatly exceeds OJ 
 
   const audit = sandbox.runStudentAudit(studentInfo, logRows, cfIndex, 1000, null, weekStart, weekEnd);
   const inflationAnoms = audit.anomalies.filter(a => a.type === 'TIME_INFLATION');
-  assert.strictEqual(inflationAnoms.length, 1, 'Should flag TIME_INFLATION for 90m claim on 5m OJ duration');
+  assert.strictEqual(inflationAnoms.length, 1, 'Should flag TIME_INFLATION: 300m claim with 11m inter-problem window');
+  assert.ok(inflationAnoms[0].detail.indexOf('previous problem') !== -1, 'Detail must reference inter-problem gap');
 });
 
 test('runStudentAudit flags SUSTAINED_SPIKE when 3+ problems are 300+ above baseline', () => {

@@ -44,6 +44,25 @@ function runStudentAudit(studentInfo, logRows, cfIndex, rollingAvgRating, prevWe
     : sanitizeHandles(studentInfo ? studentInfo.leetCodeHandle : '', 'leetcode');
   var hasLCHandle = studentLCHandles.length > 0 && !!lcIndex;
 
+  // Pre-compute sorted timeline of ALL CF submissions across ALL problems
+  // for TIME_INFLATION inter-problem gap analysis. This lets us find the last
+  // activity on a DIFFERENT problem before the current problem's first attempt,
+  // giving us the full practice window (thinking + coding), not just OJ submission activity.
+  var allCfSubTimeline = [];
+  if (hasCFHandle && cfIndex && cfIndex.index) {
+    for (var tlKey in cfIndex.index) {
+      var tlEntry = cfIndex.index[tlKey];
+      if (tlEntry.subs && Array.isArray(tlEntry.subs)) {
+        for (var tlS = 0; tlS < tlEntry.subs.length; tlS++) {
+          if (tlEntry.subs[tlS].t) {
+            allCfSubTimeline.push({ time: tlEntry.subs[tlS].t, problemKey: tlKey });
+          }
+        }
+      }
+    }
+    allCfSubTimeline.sort(function(a, b) { return a.time - b.time; });
+  }
+
   for (var i = 0; i < logRows.length; i++) {
     var row = logRows[i];
 
@@ -334,20 +353,40 @@ function runStudentAudit(studentInfo, logRows, cfIndex, rollingAvgRating, prevWe
           'SKIPPED submissions detected alongside multi-handle AC pattern', 'FLAGGED', submissionLinks));
       }
 
-      // 5b. TIME_INFLATION (Claimed practice time significantly exceeds OJ duration between first submission and AC)
-      if (row.time > 0 && truth.acTime && truth.subs && truth.subs.length > 0) {
-        var earliestSub = Infinity;
+      // 5b. TIME_INFLATION — Inter-problem gap analysis
+      // For problem X, the maximum plausible practice time is bounded by:
+      //   (last submission on any DIFFERENT problem) → (AC on problem X)
+      // This captures both thinking time and coding time, avoiding false positives
+      // when students spend most of their practice time reading/thinking before submitting.
+      if (row.time > 0 && truth.acTime && truth.subs && truth.subs.length > 0 && allCfSubTimeline.length > 1) {
+        var earliestSubOnProblem = Infinity;
         for (var si = 0; si < truth.subs.length; si++) {
-          if (truth.subs[si].t && truth.subs[si].t < earliestSub) {
-            earliestSub = truth.subs[si].t;
+          if (truth.subs[si].t && truth.subs[si].t < earliestSubOnProblem) {
+            earliestSubOnProblem = truth.subs[si].t;
           }
         }
-        if (earliestSub < Infinity) {
-          var ojDurationMin = Math.round((truth.acTime - earliestSub) / 60);
-          if (ojDurationMin > 0 && row.time > ojDurationMin * 3 && (row.time - ojDurationMin) > 30) {
-            anomalies.push(createAnomalyObject(row, 'TIME_INFLATION',
-              'Claimed ' + row.time + ' min, but OJ records show first submission to AC was ~' +
-              ojDurationMin + ' min', 'SUSPICIOUS', submissionLinks));
+
+        if (earliestSubOnProblem < Infinity) {
+          // Walk backwards through the full submission timeline to find the last
+          // submission on a DIFFERENT problem before this problem's first attempt
+          var lastDiffProblemTime = null;
+          for (var tl = allCfSubTimeline.length - 1; tl >= 0; tl--) {
+            if (allCfSubTimeline[tl].time < earliestSubOnProblem && allCfSubTimeline[tl].problemKey !== pKey) {
+              lastDiffProblemTime = allCfSubTimeline[tl].time;
+              break;
+            }
+          }
+
+          if (lastDiffProblemTime !== null) {
+            // Total OJ-bounded practice window: from end of previous problem to AC on this problem
+            // This is the HARD PHYSICAL CEILING — it already includes thinking + coding time.
+            // Any claimed time exceeding this window (+ 15 min buffer for logging imprecision) is inflation.
+            var ojPracticeWindowMin = Math.round((truth.acTime - lastDiffProblemTime) / 60);
+            if (ojPracticeWindowMin >= 2 && row.time > ojPracticeWindowMin + 15) {
+              anomalies.push(createAnomalyObject(row, 'TIME_INFLATION',
+                'Claimed ' + row.time + ' min, but only ~' + ojPracticeWindowMin +
+                ' min elapsed between previous problem activity and AC on this problem', 'SUSPICIOUS', submissionLinks));
+            }
           }
         }
       }
